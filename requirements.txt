@@ -1,0 +1,4 @@
+google-genai>=1.0.0
+python-dotenv>=1.0.0
+evdev>=1.7.0;sys_platform=="linux"
+Pillow>=10.0.0
