@@ -20,26 +20,22 @@ class TestPlaybackBuffer:
         assert buf.backspace() is True  # index=1
         assert buf.next_char() == "e"   # index=2 again
 
-    def test_backspace_at_zero(self):
+    def test_backspace_at_zero_blocks(self):
         buf = PlaybackBuffer("abc")
-        assert buf.backspace() is False
-        assert buf.negative_offset == 1
+        assert buf.backspace() is False  # blocked, nothing tracked
 
-    def test_negative_offset_swallows(self):
+    def test_backspace_at_zero_then_type_resumes_from_start(self):
+        """Backspace at 0 is just blocked. Next keypress resumes from index 0."""
         buf = PlaybackBuffer("abc")
-        # Hit backspace 3 times at position 0
+        # Mash backspace at position 0
         buf.backspace()
         buf.backspace()
         buf.backspace()
-        assert buf.negative_offset == 3
-
-        # Now type — first 3 keystrokes are swallowed
-        assert buf.next_char() is None
-        assert buf.next_char() is None
-        assert buf.next_char() is None
-        # Now normal typing resumes
+        # Typing should still start from the beginning
         assert buf.next_char() == "a"
         assert buf.next_char() == "b"
+        assert buf.next_char() == "c"
+        assert buf.exhausted is True
 
     def test_mixed_backspace_and_typing(self):
         buf = PlaybackBuffer("abcd")
@@ -47,23 +43,18 @@ class TestPlaybackBuffer:
         assert buf.next_char() == "b"  # index=2
         assert buf.backspace() is True  # index=1
         assert buf.backspace() is True  # index=0
-        assert buf.backspace() is False  # negative_offset=1
-        assert buf.next_char() is None   # swallow, neg=0
+        assert buf.backspace() is False  # blocked at 0
+        # Resume from beginning
         assert buf.next_char() == "a"    # index=1
         assert buf.next_char() == "b"    # index=2
         assert buf.next_char() == "c"    # index=3
         assert buf.next_char() == "d"    # index=4
         assert buf.exhausted is True
 
-    def test_exhausted_with_negative_offset(self):
+    def test_exhausted(self):
         buf = PlaybackBuffer("a")
-        buf.next_char()  # exhausts buffer
+        buf.next_char()
         assert buf.exhausted is True
-
-    def test_not_exhausted_during_negative_offset(self):
-        buf = PlaybackBuffer("a")
-        buf.backspace()  # neg_offset=1
-        assert buf.exhausted is False
 
     def test_empty_code_raises(self):
         with pytest.raises(ValueError):
@@ -96,19 +87,3 @@ class TestPlaybackBuffer:
             if c is not None:
                 result.append(c)
         assert "".join(result) == code
-
-    def test_heavy_backspace_then_retype(self):
-        """Simulate user hitting backspace 10 times at start."""
-        buf = PlaybackBuffer("xy")
-        for _ in range(10):
-            assert buf.backspace() is False
-        assert buf.negative_offset == 10
-
-        # Type 10 keys — all swallowed
-        for _ in range(10):
-            assert buf.next_char() is None
-
-        # Now normal
-        assert buf.next_char() == "x"
-        assert buf.next_char() == "y"
-        assert buf.exhausted is True

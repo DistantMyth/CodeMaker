@@ -67,11 +67,16 @@ for i in range(1, 13):
     KEYCODE_TO_NAME[getattr(e, f"KEY_F{i}")] = f"f{i}"
 
 
-def _find_keyboard(preferred: Optional[str] = None) -> InputDevice:
+def _find_keyboards(preferred: Optional[str] = None) -> list[InputDevice]:
+    """Return keyboard devices ranked by likelihood of being the real keyboard.
+
+    If preferred is given, returns a single-element list with that device.
+    Otherwise, auto-detects and scores all keyboard-capable devices.
+    """
     if preferred:
         dev = InputDevice(preferred)
         logger.info("Using configured keyboard: %s (%s)", dev.name, dev.path)
-        return dev
+        return [dev]
 
     devices = [InputDevice(p) for p in evdev.list_devices()]
     candidates = []
@@ -83,23 +88,45 @@ def _find_keyboard(preferred: Optional[str] = None) -> InputDevice:
         )
         if not has_letters:
             continue
+
         name = dev.name.lower()
         score = len(caps)
-        if "virtual" in name or "uinput" in name:
+
+        # ── Penalize non-keyboards ──
+        # Virtual remappers (keyd, ydotool, etc.) — skip these
+        if any(kw in name for kw in ("virtual", "uinput", "keyd", "ydotool")):
             score -= 1000
-        if "keyboard" in name:
-            score += 500
+        # Gaming mice / mice that expose keyboard keys
+        if "mouse" in name:
+            score -= 800
+
+        # ── Boost real keyboards ──
+        # Well-known physical keyboard identifiers
+        if "at translated set" in name:
+            score += 1000  # Laptop built-in keyboard
+        elif "keyboard" in name and "mouse" not in name:
+            score += 500   # External keyboard (but not mouse combo)
+
         candidates.append((score, dev))
+        logger.debug(
+            "  candidate: %s (%s) score=%d", dev.name, dev.path, score
+        )
 
     if not candidates:
         raise RuntimeError(
             "No keyboard found. Ensure 'input' group or root.\n"
+            "Available devices:\n"
             + "\n".join(f"  {d.path}: {d.name}" for d in devices)
+            + "\n\nTip: Set KEYBOARD_DEVICE in .env to the correct path."
         )
+
     candidates.sort(key=lambda x: x[0], reverse=True)
-    best = candidates[0][1]
-    logger.info("Auto-detected keyboard: %s (%s)", best.name, best.path)
-    return best
+    ranked = [dev for _, dev in candidates]
+    logger.info(
+        "Keyboard candidates (best first): %s",
+        ", ".join(f"{d.name} ({d.path})" for d in ranked[:5]),
+    )
+    return ranked
 
 
 class LinuxHook(PlatformHook):
@@ -114,9 +141,42 @@ class LinuxHook(PlatformHook):
 
     def start(self, callback: KeyCallback) -> None:
         self._callback = callback
-        self._device = _find_keyboard(self._device_path)
-        self._device.grab()
-        logger.info("Grabbed device: %s", self._device.name)
+        candidates = _find_keyboards(self._device_path)
+
+        # Try each candidate until we find one we can grab
+        grabbed = False
+        for dev in candidates:
+            try:
+                dev.grab()
+                self._device = dev
+                grabbed = True
+                logger.info("Grabbed device: %s (%s)", dev.name, dev.path)
+                break
+            except OSError as ex:
+                if ex.errno == 16:  # EBUSY — already grabbed
+                    logger.warning(
+                        "Device busy (already grabbed by another program): "
+                        "%s (%s) — trying next candidate",
+                        dev.name, dev.path,
+                    )
+                else:
+                    logger.warning(
+                        "Cannot grab %s (%s): %s — trying next",
+                        dev.name, dev.path, ex,
+                    )
+
+        if not grabbed:
+            raise RuntimeError(
+                "Could not grab any keyboard device. All candidates are "
+                "busy or inaccessible.\n"
+                "Tip: If you use 'keyd' or another key remapper, set "
+                "KEYBOARD_DEVICE in .env to the virtual device it creates "
+                "(e.g., /dev/input/event26 for 'keyd virtual keyboard').\n"
+                "Run: python -c \"import evdev; "
+                "[print(f'{d.path}: {d.name}') "
+                "for d in map(evdev.InputDevice, evdev.list_devices())]\""
+            )
+
         self._uinput = UInput.from_device(self._device, name="codemaker-vkb")
         logger.info("Virtual keyboard created")
         atexit.register(self._cleanup)

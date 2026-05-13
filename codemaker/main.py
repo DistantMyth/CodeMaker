@@ -1,7 +1,7 @@
 """CodeMaker entry point and orchestrator.
 
 Wires together all modules: config, state machine, trigger detector,
-platform hook, screenshot capture, Gemini API, and playback buffer.
+platform hook, screenshot capture, AI providers, and playback buffer.
 
 Usage:
     sudo python -m codemaker.main
@@ -19,7 +19,7 @@ from .state import ServiceState, StateManager
 from .trigger import TriggerDetector
 from .playback import PlaybackBuffer
 from .capture import capture_screenshot
-from .gemini import process_screenshot
+from .providers import process_screenshot
 from .utils import setup_logging
 from .platform.base import KeyAction, KeyEventType, PlatformHook
 
@@ -44,7 +44,7 @@ def _detect_platform(config: Config) -> PlatformHook:
 
 def main(env_path: Optional[str] = None) -> None:
     """Main entry point for the CodeMaker service."""
-    setup_logging(logging.INFO)
+    setup_logging(logging.DEBUG)
 
     config = load_config(env_path)
     state = StateManager(
@@ -69,12 +69,11 @@ def main(env_path: Optional[str] = None) -> None:
                 "Screenshot captured: %d bytes", len(image_bytes)
             )
 
-            logger.info("Sending to Gemini API...")
+            logger.info("Sending to AI provider...")
             code = process_screenshot(
                 image_bytes=image_bytes,
-                api_key=config.gemini_api_key,
                 system_prompt=config.system_prompt,
-                model=config.gemini_model,
+                providers=config.providers,
             )
 
             with buf_lock:
@@ -110,7 +109,12 @@ def main(env_path: Optional[str] = None) -> None:
 
         # ─── OBSERVER Mode ───
         if current == ServiceState.OBSERVER:
-            if trigger.feed(key_name):
+            matched = trigger.feed(key_name)
+            logger.debug(
+                "KEY: %-12s | buffer: %s | match: %s",
+                key_name, trigger.current_buffer, matched,
+            )
+            if matched:
                 logger.info("TRIGGER SEQUENCE MATCHED!")
                 state.transition(ServiceState.CAPTURE)
                 thread = threading.Thread(
@@ -171,17 +175,23 @@ def main(env_path: Optional[str] = None) -> None:
 
         return KeyAction.PASS_THROUGH
 
+    # Build provider chain display
+    provider_chain = " → ".join(
+        f"{p.name}({p.provider_type}:{p.model.split('/')[-1][:15]})"
+        for p in config.providers if p.is_configured
+    )
+
     # Print startup banner
     print(
         "╔══════════════════════════════════════════╗\n"
         "║         CodeMaker v0.1.0 Active          ║\n"
         "║                                          ║\n"
         f"║  Trigger: {','.join(config.trigger_sequence):<29}║\n"
-        f"║  Model:   {config.gemini_model:<29}║\n"
         f"║  Kill:    {'+'.join(sorted(config.kill_combo)):<29}║\n"
         "║                                          ║\n"
         "║  Waiting for trigger sequence...          ║\n"
-        "╚══════════════════════════════════════════╝",
+        "╚══════════════════════════════════════════╝\n"
+        f"  Providers: {provider_chain}",
         file=sys.stderr,
     )
 

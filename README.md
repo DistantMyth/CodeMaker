@@ -5,13 +5,14 @@
   </p>
   <p align="center">
     A background service that monitors your keyboard for a trigger sequence,<br>
-    screenshots the screen, sends it to Google Gemini, then <em>ghost-types</em> the<br>
-    AI-generated code — one character per keystroke — by intercepting your real input.
+    screenshots the screen, sends it to an AI model, then <em>ghost-types</em> the<br>
+    generated code — one character per keystroke — by intercepting your real input.
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/python-3.11+-blue?logo=python&logoColor=white" alt="Python 3.11+">
     <img src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows-green" alt="Linux | Windows">
     <img src="https://img.shields.io/badge/wayland-all%20compositors-purple" alt="Wayland">
+    <img src="https://img.shields.io/badge/providers-7%20APIs%20+%20local-orange" alt="Multi-Provider">
     <img src="https://img.shields.io/badge/license-MIT-yellow" alt="MIT License">
   </p>
 </p>
@@ -21,15 +22,18 @@
 ## Table of Contents
 
 - [How It Works](#how-it-works)
+- [Supported AI Providers](#supported-ai-providers)
 - [Installation](#installation)
   - [Arch Linux](#-arch-linux)
   - [Debian / Ubuntu](#-debian--ubuntu)
   - [Fedora / RHEL](#-fedora--rhel)
   - [Windows](#-windows)
+- [Finding Your Keyboard Device (Linux)](#finding-your-keyboard-device-linux)
 - [Configuration](#configuration)
 - [Usage](#usage)
 - [Troubleshooting](#troubleshooting)
 - [Architecture](#architecture)
+- [Autostart / Run on Boot](#autostart--run-on-boot)
 - [Running Tests](#running-tests)
 
 ---
@@ -40,7 +44,7 @@
 ┌──────────────┐      ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
 │   OBSERVER   │─────►│   CAPTURE    │─────►│  PROCESSING  │─────►│   PLAYBACK   │
 │              │      │              │      │              │      │              │
-│  Monitors    │      │  Screenshot  │      │  Gemini API  │      │  Ghost-types │
+│  Monitors    │      │  Screenshot  │      │  AI provider │      │  Ghost-types │
 │  trigger     │      │  taken       │      │  returns     │      │  code from   │
 │  sequence    │      │  silently    │      │  code        │      │  buffer      │
 └──────────────┘      └──────────────┘      └──────────────┘      └──────┬───────┘
@@ -49,22 +53,53 @@
 ```
 
 1. **OBSERVER** — The service silently monitors your keyboard for the trigger sequence (default: `Tab Tab Tab Backspace Backspace Backspace`)
-2. **CAPTURE** — On trigger, it silently screenshots your screen and sends it to the Gemini API
-3. **PROCESSING** — Gemini analyzes the screenshot and generates code based on the system prompt
-4. **PLAYBACK** — Every key you press now outputs the next character from the AI-generated code instead of the real character. Backspace moves backward through the code buffer.
+2. **CAPTURE** — On trigger, it silently screenshots your screen
+3. **PROCESSING** — The screenshot is sent to the configured AI provider (with automatic fallback to the next provider on failure)
+4. **PLAYBACK** — Every key you press now outputs the next character from the AI-generated code. Indentation is stripped so your editor's auto-indent handles formatting. Backspace moves backward through the code buffer.
 
-### The Ghost Typing Mechanism
-
-During playback, your physical keyboard is intercepted at the kernel level (Linux) or via low-level hooks (Windows). The real character is suppressed and replaced with the next character from the AI's code buffer.
-
-**Backspace Pointer-Sync:**
+### Backspace Behavior
 
 | Scenario | What Happens |
 |----------|-------------|
 | Normal typing | Next character from AI code is injected |
 | Backspace (buffer has content) | Moves cursor back in code buffer, deletes injected char |
-| Backspace (at position 0) | Blocked — tracks how far "past the start" you went |
-| Typing after over-backspacing | Keystrokes are silently consumed until you "catch up" to position 0 |
+| Backspace (at position 0) | Blocked — stays at start |
+| Any key after backspacing to 0 | Resumes typing from the beginning of the buffer |
+
+---
+
+## Supported AI Providers
+
+CodeMaker supports **up to 5 API providers + 1 local model**, tried in configurable priority order. If one fails (rate limit, error), it automatically falls back to the next.
+
+| Provider | Free Tier | Vision | Get API Key |
+|----------|-----------|--------|-------------|
+| **Google Gemini** | 1,500 req/day (Flash) | ✅ | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| **Groq** | 14,400 req/day | ✅ | [console.groq.com](https://console.groq.com) |
+| **OpenRouter** | $1 free credit | ✅ | [openrouter.ai](https://openrouter.ai) |
+| **Mistral** | Free tier | ✅ | [console.mistral.ai](https://console.mistral.ai) |
+| **Together AI** | $1 free credit | ✅ | [together.ai](https://www.together.ai) |
+| **GitHub Models** | Free with GitHub | ✅ | [github.com/marketplace/models](https://github.com/marketplace/models) |
+| **Any OpenAI-compatible** | varies | ✅ | Custom `BASE_URL` |
+| **Ollama (local)** | ∞ unlimited | ✅ | [ollama.com](https://ollama.com) — auto-downloads models |
+
+### Recommended Setup
+
+Set Gemini as primary (fastest free tier), Groq as fallback (also free), and optionally Ollama for offline use:
+
+```env
+PROVIDER_PRIORITY=1,2,local
+
+PROVIDER_1_TYPE=gemini
+PROVIDER_1_KEY=your_gemini_key
+PROVIDER_1_MODEL=gemini-2.0-flash
+
+PROVIDER_2_TYPE=groq
+PROVIDER_2_KEY=your_groq_key
+PROVIDER_2_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
+
+LOCAL_MODEL=qwen2.5vl:3b
+```
 
 ---
 
@@ -73,7 +108,7 @@ During playback, your physical keyboard is intercepted at the kernel level (Linu
 ### Prerequisites (All Platforms)
 
 - **Python 3.11** or newer
-- A **Google Gemini API key** — get one free at [aistudio.google.com](https://aistudio.google.com/apikey)
+- At least one AI provider API key (see [Supported AI Providers](#supported-ai-providers))
 
 ---
 
@@ -100,6 +135,9 @@ sudo pacman -S gnome-screenshot
 
 # For uinput kernel module (usually already loaded)
 sudo modprobe uinput
+
+# Optional: for local AI model support
+sudo pacman -S ollama
 ```
 
 #### 2. Set up input permissions
@@ -133,27 +171,36 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-#### 4. Configure
+#### 4. Find your keyboard device
+
+Many laptops split keyboard input across multiple `/dev/input/event*` devices. Run the diagnostic tool to find the correct one:
+
+```bash
+sudo .venv/bin/python diagnose_keyboard.py
+```
+
+Press a few keys and the tool will tell you which device to use. Set it in your `.env`:
+
+```env
+KEYBOARD_DEVICE=/dev/input/event10   # Use the path from the diagnostic
+```
+
+#### 5. Configure
 
 ```bash
 cp .env.example .env
-
-# Edit .env and set your Gemini API key
-# Use your preferred editor:
-nano .env    # or: vim .env / code .env
+nano .env
 ```
 
-Set `GEMINI_API_KEY=your_actual_key_here` at minimum.
+Set at minimum:
+- `PROVIDER_1_KEY` — your Gemini API key (or whichever provider you're using)
+- `KEYBOARD_DEVICE` — from the diagnostic above
 
-#### 5. Run
+#### 6. Run
 
 ```bash
-# Option A: Using sudo with the venv Python (recommended)
+# Using sudo with the venv Python
 sudo .venv/bin/python -m codemaker
-
-# Option B: If your user is in the 'input' group and uinput rules are set
-source .venv/bin/activate
-python -m codemaker
 ```
 
 </details>
@@ -168,7 +215,6 @@ python -m codemaker
 #### 1. Install system dependencies
 
 ```bash
-# Update package lists
 sudo apt update
 
 # Python & build tools (python3-venv is separate on Debian/Ubuntu)
@@ -189,19 +235,19 @@ sudo apt install gnome-screenshot
 
 # Ensure uinput module is loaded
 sudo modprobe uinput
+
+# Optional: for local AI model support
+curl -fsSL https://ollama.com/install.sh | sh
 ```
 
 #### 2. Set up input permissions
 
 ```bash
-# Add your user to the input group
 sudo usermod -aG input $USER
 
-# Create udev rule for /dev/uinput access
 echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' | \
   sudo tee /etc/udev/rules.d/99-uinput.rules
 
-# Reload udev rules
 sudo udevadm control --reload-rules
 sudo udevadm trigger
 
@@ -214,31 +260,30 @@ sudo udevadm trigger
 git clone <your-repo-url> CodeMaker
 cd CodeMaker
 
-# Create virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-#### 4. Configure
+#### 4. Find your keyboard device
+
+```bash
+sudo .venv/bin/python3 diagnose_keyboard.py
+# Press some keys, then Ctrl+C. Set the suggested path in .env.
+```
+
+#### 5. Configure
 
 ```bash
 cp .env.example .env
 nano .env
-# Set: GEMINI_API_KEY=your_actual_key_here
+# Set PROVIDER_1_KEY and KEYBOARD_DEVICE
 ```
 
-#### 5. Run
+#### 6. Run
 
 ```bash
-# Option A: Using sudo with the venv Python (recommended)
 sudo .venv/bin/python3 -m codemaker
-
-# Option B: If your user is in the 'input' group and uinput rules are set
-source .venv/bin/activate
-python3 -m codemaker
 ```
 
 </details>
@@ -257,30 +302,25 @@ python3 -m codemaker
 sudo dnf install python3 python3-pip python3-devel gcc git
 
 # Screenshot tool (install at least one)
-# For Hyprland / Sway / wlroots-based compositors:
-sudo dnf install grim
-
-# For KDE Plasma:
-sudo dnf install spectacle
-
-# For GNOME (usually pre-installed on Fedora Workstation):
-sudo dnf install gnome-screenshot
+sudo dnf install grim          # wlroots compositors
+sudo dnf install spectacle     # KDE Plasma
+sudo dnf install gnome-screenshot  # GNOME
 
 # Ensure uinput module is loaded
 sudo modprobe uinput
+
+# Optional: for local AI model support
+curl -fsSL https://ollama.com/install.sh | sh
 ```
 
 #### 2. Set up input permissions
 
 ```bash
-# Add your user to the input group
 sudo usermod -aG input $USER
 
-# Create udev rule for /dev/uinput access
 echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' | \
   sudo tee /etc/udev/rules.d/99-uinput.rules
 
-# Reload udev rules
 sudo udevadm control --reload-rules
 sudo udevadm trigger
 
@@ -293,31 +333,30 @@ sudo udevadm trigger
 git clone <your-repo-url> CodeMaker
 cd CodeMaker
 
-# Create virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-#### 4. Configure
+#### 4. Find your keyboard device
+
+```bash
+sudo .venv/bin/python3 diagnose_keyboard.py
+# Press some keys, then Ctrl+C. Set the suggested path in .env.
+```
+
+#### 5. Configure
 
 ```bash
 cp .env.example .env
 nano .env
-# Set: GEMINI_API_KEY=your_actual_key_here
+# Set PROVIDER_1_KEY and KEYBOARD_DEVICE
 ```
 
-#### 5. Run
+#### 6. Run
 
 ```bash
-# Option A: Using sudo with the venv Python (recommended)
 sudo .venv/bin/python3 -m codemaker
-
-# Option B: If your user is in the 'input' group and uinput rules are set
-source .venv/bin/activate
-python3 -m codemaker
 ```
 
 </details>
@@ -333,18 +372,9 @@ python3 -m codemaker
 
 Download and install Python 3.11+ from [python.org](https://www.python.org/downloads/).
 
-> **Important:** During installation, check **"Add Python to PATH"** and **"Install for all users"**.
+> **Important:** Check **"Add Python to PATH"** and **"Install for all users"** during installation.
 
-Verify the installation:
-
-```powershell
-python --version
-# Should show Python 3.11.x or newer
-```
-
-#### 2. Install Git (optional, for cloning)
-
-Download from [git-scm.com](https://git-scm.com/download/win) or use winget:
+#### 2. Install Git (optional)
 
 ```powershell
 winget install Git.Git
@@ -352,20 +382,16 @@ winget install Git.Git
 
 #### 3. Clone and set up the project
 
-Open **PowerShell** (or Command Prompt):
-
 ```powershell
 git clone <your-repo-url> CodeMaker
 cd CodeMaker
 
-# Create virtual environment
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
-# If you get an execution policy error, run this first:
+# If execution policy error:
 # Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
-# Install dependencies
 pip install -r requirements.txt
 ```
 
@@ -373,11 +399,11 @@ pip install -r requirements.txt
 
 ```powershell
 copy .env.example .env
-
-# Edit .env with Notepad or your editor
 notepad .env
-# Set: GEMINI_API_KEY=your_actual_key_here
+# Set PROVIDER_1_KEY
 ```
+
+> No `KEYBOARD_DEVICE` needed on Windows — keyboard hooking is automatic.
 
 #### 5. Run
 
@@ -389,9 +415,43 @@ cd C:\path\to\CodeMaker
 python -m codemaker
 ```
 
-> **Note:** Running as Administrator is recommended for reliable low-level keyboard hook operation. The tool will work without admin, but some applications with elevated privileges may not respond to injected keystrokes.
-
 </details>
+
+---
+
+## Finding Your Keyboard Device (Linux)
+
+Many laptops (especially Lenovo, ASUS, Dell) split keyboard input across multiple `/dev/input/event*` devices. The auto-detection may pick the wrong one. Use the included diagnostic tool:
+
+```bash
+sudo .venv/bin/python diagnose_keyboard.py
+```
+
+**Output:**
+
+```
+══════════════════════════════════════════════════════════════════
+  CodeMaker Keyboard Diagnostic
+  Press keys on your keyboard. Watch which device receives them.
+  Press Ctrl+C to stop.
+══════════════════════════════════════════════════════════════════
+
+  Monitoring: /dev/input/event3       AT Translated Set 2 keyboard
+  Monitoring: /dev/input/event7       ITE Tech. Inc. ITE Device(8295)
+  Monitoring: /dev/input/event10      ITE Tech. Inc. ITE Device(8176)
+──────────────────────────────────────────────────────────────────
+  ⌨️  /dev/input/event10      │ ITE Tech. Inc. ITE Device(8176)      │ KEY_A
+  ⌨️  /dev/input/event10      │ ITE Tech. Inc. ITE Device(8176)      │ KEY_B
+──────────────────────────────────────────────────────────────────
+  ✅ Set this in your .env:
+     KEYBOARD_DEVICE=/dev/input/event10
+```
+
+> **Common patterns:**
+> - **Lenovo IdeaPad/ThinkPad:** Usually `ITE Tech` device, not `AT Translated Set 2`
+> - **External USB keyboards:** Named after the brand (e.g., `Logitech`, `Corsair`)
+> - **Key remappers (keyd, kmonad):** Use the virtual device they create
+> - **Gaming mice with macros:** Will show as a separate keyboard — ignore these
 
 ---
 
@@ -399,22 +459,34 @@ python -m codemaker
 
 All settings live in the `.env` file. Copy `.env.example` to `.env` and edit:
 
+### Core Settings
+
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `GEMINI_API_KEY` | *(required)* | Your Google Gemini API key |
-| `SYSTEM_PROMPT` | `Solve this in c and have no comments at all.` | The instruction sent to Gemini alongside the screenshot |
+| `SYSTEM_PROMPT` | `Solve this in c and have no comments at all.` | Instruction sent to the AI with the screenshot |
 | `TRIGGER_SEQUENCE` | `tab,tab,tab,backspace,backspace,backspace` | Comma-separated key names that activate capture |
-| `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model (`gemini-2.0-flash`, `gemini-2.5-pro`, etc.) |
 | `SCREENSHOT_TOOL` | `auto` | `grim`, `gnome-screenshot`, `spectacle`, `pillow`, or `auto` |
 | `KILL_COMBO` | `ctrl+shift+escape` | Emergency kill combo to exit instantly |
-| `KEYBOARD_DEVICE` | *(auto-detect)* | Linux only: explicit device path like `/dev/input/event3` |
+| `KEYBOARD_DEVICE` | *(auto-detect)* | Linux only: explicit device path like `/dev/input/event10` |
 
-### Available Key Names for `TRIGGER_SEQUENCE`
+### AI Provider Settings
 
-Letters: `a` through `z` · Digits: `0` through `9` · Modifiers: `shift`, `ctrl`, `alt`, `meta`  
+| Variable | Description |
+|:---------|:------------|
+| `PROVIDER_PRIORITY` | Comma-separated priority order: `1,2,3,4,5,local` |
+| `PROVIDER_N_TYPE` | Provider type: `gemini`, `groq`, `openrouter`, `mistral`, `together`, `github`, `openai` |
+| `PROVIDER_N_KEY` | API key for the provider |
+| `PROVIDER_N_MODEL` | Model name/ID |
+| `PROVIDER_N_BASE_URL` | Custom base URL (for `openai` type or overrides) |
+| `LOCAL_MODEL` | Ollama model name (e.g., `qwen2.5vl:3b`) — auto-downloaded on first use |
+| `OLLAMA_URL` | Ollama server URL (default: `http://localhost:11434`) |
+
+### Available Key Names
+
+Letters: `a`–`z` · Digits: `0`–`9` · Modifiers: `shift`, `ctrl`, `alt`, `meta`  
 Special: `tab`, `backspace`, `enter`, `space`, `escape`, `delete`, `capslock`  
 Navigation: `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`  
-Function keys: `f1` through `f12`
+Function keys: `f1`–`f12`
 
 ---
 
@@ -430,34 +502,36 @@ sudo .venv/bin/python -m codemaker
 python -m codemaker
 ```
 
-You'll see a startup banner:
+You'll see a startup banner showing the active provider chain:
 
 ```
 ╔══════════════════════════════════════════╗
 ║         CodeMaker v0.1.0 Active          ║
 ║                                          ║
 ║  Trigger: tab,tab,tab,backspace,...      ║
-║  Model:   gemini-2.0-flash              ║
 ║  Kill:    ctrl+escape+shift              ║
 ║                                          ║
 ║  Waiting for trigger sequence...          ║
 ╚══════════════════════════════════════════╝
+  Providers: provider_1(gemini:gemini-2.0-fla) → provider_2(groq:llama-4-scout-1)
 ```
 
 ### Workflow
 
 1. Open any text editor, IDE, or code input field
 2. Type the trigger sequence: **Tab Tab Tab Backspace Backspace Backspace**
-3. Wait 2–5 seconds for the screenshot to be captured and processed by Gemini
-4. Start typing anything — every key you press will output the next character of the AI-generated code
+3. Wait 2–5 seconds for the screenshot to be captured and processed
+4. Start typing anything — every key you press outputs the next character of the AI-generated code
 5. Use **Backspace** to move backward in the code buffer
 6. When the entire code buffer has been typed out, normal keyboard operation resumes automatically
+
+> **Note:** Indentation is automatically stripped from the AI output so your editor's auto-indent handles formatting correctly.
 
 ### Emergency Exit
 
 Press **Ctrl+Shift+Escape** (or your configured `KILL_COMBO`) at any time to instantly kill the service and restore normal keyboard operation.
 
-> **If your keyboard becomes unresponsive** (e.g., the process was killed with `kill -9`), unplug and replug your keyboard, or switch to a TTY (`Ctrl+Alt+F2`) and kill the process.
+> **If your keyboard becomes unresponsive** (e.g., the process crashed hard), unplug and replug your keyboard, or switch to a TTY (`Ctrl+Alt+F2`) and kill the process.
 
 ---
 
@@ -471,58 +545,59 @@ Press **Ctrl+Shift+Escape** (or your configured `KILL_COMBO`) at any time to ins
 Your user is not in the `input` group, or the group change hasn't taken effect.
 
 ```bash
-# Check your groups
-groups
-
-# If 'input' is not listed:
+groups  # Check if 'input' is listed
 sudo usermod -aG input $USER
-# Then LOG OUT and back in (or reboot)
-
-# Quick fix (does not persist):
-sudo python -m codemaker
+# LOG OUT and back in, or reboot
 ```
+
+Quick fix: `sudo .venv/bin/python -m codemaker`
 
 </details>
 
 <details>
 <summary><strong>Permission denied: /dev/uinput</strong></summary>
 
-The udev rule for uinput hasn't been created or applied.
-
 ```bash
-# Create the rule
 echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' | \
   sudo tee /etc/udev/rules.d/99-uinput.rules
-
-# Reload
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-
-# Verify
-ls -la /dev/uinput
-# Should show: crw-rw---- 1 root input ...
+sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
 </details>
 
 <details>
-<summary><strong>No keyboard device found</strong></summary>
+<summary><strong>Wrong keyboard detected / no keys received</strong></summary>
 
-The auto-detection couldn't find your keyboard. List available devices:
+The auto-detection picked the wrong device. Run the diagnostic:
 
 ```bash
-sudo .venv/bin/python -c "
-import evdev
-for path in evdev.list_devices():
-    dev = evdev.InputDevice(path)
-    print(f'{dev.path}: {dev.name}')
-"
+sudo .venv/bin/python diagnose_keyboard.py
 ```
 
-Find your keyboard in the output and set `KEYBOARD_DEVICE` in `.env`:
+Press keys and see which device receives them. Set it in `.env`:
 
+```env
+KEYBOARD_DEVICE=/dev/input/event10
 ```
-KEYBOARD_DEVICE=/dev/input/event3
+
+**Common causes:**
+- Laptop keyboards often use `ITE Tech` devices, not `AT Translated Set 2`
+- Key remappers (keyd, kmonad) grab the physical device — use their virtual output device instead
+- Gaming mice with macro keys show up as keyboards
+
+</details>
+
+<details>
+<summary><strong>Device busy (EBUSY) — "already grabbed by another program"</strong></summary>
+
+Another program (like `keyd`, `kmonad`, or a previous CodeMaker instance) has an exclusive grab on the keyboard.
+
+```bash
+# If using keyd, either stop it:
+sudo systemctl stop keyd
+
+# Or use keyd's virtual output device:
+KEYBOARD_DEVICE=/dev/input/event26   # keyd virtual keyboard
 ```
 
 </details>
@@ -530,27 +605,15 @@ KEYBOARD_DEVICE=/dev/input/event3
 <details>
 <summary><strong>Screenshot fails: "All screenshot methods failed"</strong></summary>
 
-Install a screenshot tool compatible with your compositor:
+When running as `sudo`, Wayland environment variables are stripped. CodeMaker auto-recovers them, but if it still fails:
 
 ```bash
-# Hyprland / Sway / wlroots:
-sudo pacman -S grim          # Arch
-sudo apt install grim         # Debian/Ubuntu
-sudo dnf install grim         # Fedora
+# Install a screenshot tool for your compositor:
+sudo pacman -S grim          # Arch + wlroots
+sudo apt install grim         # Debian + wlroots
+sudo dnf install grim         # Fedora + wlroots
 
-# KDE Plasma:
-sudo pacman -S spectacle     # Arch
-sudo apt install kde-spectacle # Debian/Ubuntu
-sudo dnf install spectacle    # Fedora
-
-# GNOME:
-sudo pacman -S gnome-screenshot  # Arch
-sudo apt install gnome-screenshot # Debian/Ubuntu (usually pre-installed)
-```
-
-Or force a specific tool in `.env`:
-
-```
+# Or force a specific tool:
 SCREENSHOT_TOOL=grim
 ```
 
@@ -559,18 +622,39 @@ SCREENSHOT_TOOL=grim
 <details>
 <summary><strong>evdev build fails: "Python.h not found"</strong></summary>
 
-Install the Python development headers:
-
 ```bash
 sudo apt install python3-dev    # Debian/Ubuntu
 sudo dnf install python3-devel  # Fedora
-sudo pacman -S python           # Arch (headers included by default)
+sudo pacman -S python           # Arch (headers included)
 ```
 
-Then reinstall:
+</details>
 
-```bash
-pip install --force-reinstall evdev
+### API Issues
+
+<details>
+<summary><strong>429 RESOURCE_EXHAUSTED — quota exceeded</strong></summary>
+
+Your API provider's free tier is exhausted. Solutions:
+
+1. **Wait** for daily reset (midnight Pacific Time for Gemini)
+2. **Add more providers** as fallbacks in `.env` (e.g., Groq, OpenRouter)
+3. **Create a new API key** from a different Google Cloud project
+4. **Use a local model** via Ollama (unlimited, no API needed)
+
+</details>
+
+<details>
+<summary><strong>Model not found (404)</strong></summary>
+
+Check the exact model ID for your provider. Common mistakes:
+
+```env
+# ❌ Wrong (missing org prefix for Groq)
+PROVIDER_2_MODEL=llama-4-scout-17b-16e-instruct
+
+# ✅ Correct
+PROVIDER_2_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
 ```
 
 </details>
@@ -580,15 +664,12 @@ pip install --force-reinstall evdev
 <details>
 <summary><strong>Keyboard hook not working in elevated apps</strong></summary>
 
-Some apps running as Administrator won't receive injected keystrokes unless CodeMaker is also running as Administrator. Always run from an elevated PowerShell:
-
-1. Right-click PowerShell → **Run as Administrator**
-2. Navigate to the project and run as usual
+Run CodeMaker as Administrator: Right-click PowerShell → **Run as Administrator**.
 
 </details>
 
 <details>
-<summary><strong>PowerShell: "cannot be loaded because running scripts is disabled"</strong></summary>
+<summary><strong>PowerShell execution policy error</strong></summary>
 
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
@@ -602,25 +683,27 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 ```
 CodeMaker/
-├── .env.example              # Configuration template
+├── .env.example              # Configuration template (all providers)
 ├── .env                      # Your config (gitignored)
 ├── requirements.txt          # Python dependencies
+├── diagnose_keyboard.py      # Keyboard device finder tool
 ├── README.md                 # This file
 ├── codemaker/
 │   ├── __init__.py           # Package metadata
 │   ├── __main__.py           # python -m codemaker entry
 │   ├── main.py               # Orchestrator — wires everything
-│   ├── config.py             # .env → frozen Config dataclass
+│   ├── config.py             # .env → Config dataclass + provider parsing
 │   ├── state.py              # OBSERVER/CAPTURE/PLAYBACK state machine
 │   ├── trigger.py            # Sliding-window trigger detector
-│   ├── playback.py           # Code buffer + backspace pointer-sync
-│   ├── capture.py            # Universal screenshot capture
-│   ├── gemini.py             # Gemini Vision API integration
-│   ├── utils.py              # Logging, code fence stripping
+│   ├── playback.py           # Code buffer + backspace logic
+│   ├── capture.py            # Universal screenshot (auto env recovery)
+│   ├── providers.py          # Multi-provider AI backend + fallback chain
+│   ├── gemini.py             # Legacy Gemini-only module (deprecated)
+│   ├── utils.py              # Logging, code fence & indentation stripping
 │   └── platform/
 │       ├── __init__.py
 │       ├── base.py           # Abstract PlatformHook interface
-│       ├── linux.py          # evdev grab + uinput virtual keyboard
+│       ├── linux.py          # evdev grab + uinput (all compositors)
 │       └── windows.py        # WH_KEYBOARD_LL + SendInput
 └── tests/
     ├── test_trigger.py       # Trigger detector tests
@@ -636,32 +719,216 @@ CodeMaker/
 | Keyboard interception | evdev grab | evdev grab | WH_KEYBOARD_LL |
 | Key injection | uinput virtual keyboard | uinput virtual keyboard | SendInput (Unicode) |
 | Screenshot | grim / spectacle / gnome-screenshot | Pillow ImageGrab | Pillow ImageGrab |
-| Compositor support | All (Hyprland, Sway, GNOME, KDE, river, dwl) | All WMs | N/A |
+| Compositor support | All (Hyprland, Sway, GNOME, KDE, etc.) | All WMs | N/A |
 | Required privileges | `input` group or root | `input` group or root | Administrator (recommended) |
+
+### Provider Fallback Flow
+
+```
+Trigger → Screenshot → Provider 1 ──fail──► Provider 2 ──fail──► ... ──fail──► Local Ollama
+                            │                    │                                  │
+                            ▼                    ▼                                  ▼
+                        ✅ Code              ✅ Code                           ✅ Code
+                            │                    │                                  │
+                            └────────────────────┴──────────────────────────────────┘
+                                                 │
+                                          Strip indentation
+                                                 │
+                                          Ghost-type buffer
+```
 
 ---
 
 ## Running Tests
 
 ```bash
-# Activate the virtual environment
 source .venv/bin/activate    # Linux
-.\.venv\Scripts\Activate.ps1 # Windows
+# .\.venv\Scripts\Activate.ps1  # Windows
 
-# Run all tests
 python -m pytest tests/ -v
-
-# Run specific test files
-python -m pytest tests/test_playback.py -v
-python -m pytest tests/test_trigger.py -v
-python -m pytest tests/test_state.py -v
 ```
 
 Expected output:
 
 ```
-========================= 36 passed in 0.03s =========================
+========================= 34 passed in 0.03s =========================
 ```
+
+---
+
+## Autostart / Run on Boot
+
+### 🐧 Linux (systemd — all distros)
+
+<details>
+<summary><strong>Click to expand</strong></summary>
+
+#### 1. Create the service file
+
+```bash
+sudo nano /etc/systemd/system/codemaker.service
+```
+
+Paste the following (adjust paths to match your setup):
+
+```ini
+[Unit]
+Description=CodeMaker — AI code ghost-typing service
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+# ─── CHANGE THESE to match your setup ───
+User=root
+Environment=SUDO_USER=tarun
+Environment=SUDO_UID=1000
+WorkingDirectory=/home/tarun/CodeMaker
+ExecStart=/home/tarun/CodeMaker/.venv/bin/python -m codemaker
+# ─────────────────────────────────────────
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical-session.target
+```
+
+> **Important:** The `SUDO_USER` and `SUDO_UID` environment variables are needed so CodeMaker can recover your Wayland session for screenshots. Replace `tarun` and `1000` with your username and UID (`id -u`).
+
+#### 2. Enable and start
+
+```bash
+# Reload systemd to pick up the new service
+sudo systemctl daemon-reload
+
+# Start immediately
+sudo systemctl start codemaker
+
+# Enable on boot
+sudo systemctl enable codemaker
+
+# Check status
+sudo systemctl status codemaker
+
+# View logs
+journalctl -u codemaker -f
+```
+
+#### 3. Manage
+
+```bash
+sudo systemctl stop codemaker      # Stop
+sudo systemctl restart codemaker   # Restart
+sudo systemctl disable codemaker   # Disable autostart
+```
+
+</details>
+
+### 🐧 Arch Linux (systemd user service — no sudo needed)
+
+<details>
+<summary><strong>Click to expand</strong></summary>
+
+If your user has `input` group access and uinput rules set up, you can run as a user service instead of root:
+
+#### 1. Create the user service
+
+```bash
+mkdir -p ~/.config/systemd/user
+nano ~/.config/systemd/user/codemaker.service
+```
+
+```ini
+[Unit]
+Description=CodeMaker — AI code ghost-typing service
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/tarun/CodeMaker
+ExecStart=/home/tarun/CodeMaker/.venv/bin/python -m codemaker
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+#### 2. Enable and start
+
+```bash
+systemctl --user daemon-reload
+systemctl --user start codemaker
+systemctl --user enable codemaker
+
+# View logs
+journalctl --user -u codemaker -f
+```
+
+> **Note:** User services only run while you're logged in. If you need it running before login, use the root systemd service above.
+
+</details>
+
+### 🪟 Windows (Task Scheduler)
+
+<details>
+<summary><strong>Click to expand</strong></summary>
+
+#### Option A: Task Scheduler (simplest)
+
+1. Press **Win+R**, type `taskschd.msc`, press Enter
+2. Click **Create Task** (not "Basic Task")
+3. **General tab:**
+   - Name: `CodeMaker`
+   - Check **"Run with highest privileges"**
+   - Configure for: Windows 10/11
+4. **Triggers tab → New:**
+   - Begin the task: **At log on**
+   - Delay task for: `10 seconds`
+5. **Actions tab → New:**
+   - Action: Start a program
+   - Program: `C:\path\to\CodeMaker\.venv\Scripts\python.exe`
+   - Arguments: `-m codemaker`
+   - Start in: `C:\path\to\CodeMaker`
+6. **Conditions tab:**
+   - Uncheck "Start only if on AC power"
+7. Click **OK**
+
+#### Option B: Startup folder (quick & dirty)
+
+1. Press **Win+R**, type `shell:startup`, press Enter
+2. Create a file `codemaker.bat` with:
+
+```batch
+@echo off
+cd /d C:\path\to\CodeMaker
+.venv\Scripts\python.exe -m codemaker
+```
+
+> **Note:** The startup folder method doesn't run as Administrator. Some elevated apps may not respond to injected keystrokes.
+
+#### Option C: Windows Service (NSSM — most robust)
+
+```powershell
+# Install NSSM (Non-Sucking Service Manager)
+winget install NSSM
+
+# Create the service
+nssm install CodeMaker "C:\path\to\CodeMaker\.venv\Scripts\python.exe" "-m codemaker"
+nssm set CodeMaker AppDirectory "C:\path\to\CodeMaker"
+nssm set CodeMaker Start SERVICE_AUTO_START
+
+# Start it
+nssm start CodeMaker
+
+# Manage
+nssm stop CodeMaker
+nssm remove CodeMaker confirm
+```
+
+</details>
 
 ---
 

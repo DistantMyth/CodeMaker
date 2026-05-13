@@ -58,3 +58,20 @@ def strip_code_fences(text: str) -> str:
         text = text[:-3]
 
     return text.strip()
+
+
+def strip_indentation(code: str) -> str:
+    """Remove all leading whitespace from every line of code.
+
+    This allows the editor's auto-indent to handle formatting
+    instead of conflicting with the AI's indentation style.
+
+    Args:
+        code: Code string with indentation.
+
+    Returns:
+        Code with all leading whitespace stripped from each line.
+    """
+    lines = code.split("\n")
+    stripped = [line.lstrip() for line in lines]
+    return "\n".join(stripped)

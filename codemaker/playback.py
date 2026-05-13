@@ -16,14 +16,13 @@ class PlaybackBuffer:
     """Manages the AI-generated code buffer and ghost-typing state.
 
     Pointer-Sync Rules:
-    ┌─────────────────────────────────────────────────────────────────┐
-    │ Scenario                │ index  │ neg_offset │ Behavior       │
-    ├─────────────────────────┼────────┼────────────┼────────────────┤
-    │ Normal typing           │ ++     │ 0          │ Inject char    │
-    │ Backspace (index > 0)   │ --     │ 0          │ Allow BS       │
-    │ Backspace (index == 0)  │ 0      │ ++         │ Block BS       │
-    │ Type after neg_offset   │ same   │ --         │ Swallow key    │
-    └─────────────────────────────────────────────────────────────────┘
+    ┌────────────────────────────────────────────────────┐
+    │ Scenario                │ index  │ Behavior       │
+    ├─────────────────────────┼────────┼────────────────┤
+    │ Normal typing           │ ++     │ Inject char    │
+    │ Backspace (index > 0)   │ --     │ Allow BS       │
+    │ Backspace (index == 0)  │ 0      │ Block BS       │
+    └────────────────────────────────────────────────────┘
     """
 
     def __init__(self, code: str):
@@ -36,7 +35,6 @@ class PlaybackBuffer:
 
         self.code = code
         self.index = 0
-        self.negative_offset = 0
         logger.info(
             "PlaybackBuffer initialized: %d characters", len(code)
         )
@@ -48,20 +46,8 @@ class PlaybackBuffer:
         Called when the user presses any character key during Playback.
 
         Returns:
-            The character to inject, or None if the keystroke should
-            be swallowed (during negative_offset recovery) or if the
-            buffer is exhausted.
+            The character to inject, or None if the buffer is exhausted.
         """
-        # If we have a negative offset, the user is "typing back"
-        # to the starting point — consume their keystroke silently
-        if self.negative_offset > 0:
-            self.negative_offset -= 1
-            logger.debug(
-                "Swallowing keystroke (negative_offset now %d)",
-                self.negative_offset,
-            )
-            return None
-
         # Buffer exhausted
         if self.index >= len(self.code):
             return None
@@ -83,8 +69,7 @@ class PlaybackBuffer:
         """Handle a backspace press during Playback.
 
         Moves the virtual cursor backward through the code buffer.
-        If already at position 0, tracks the "overshot" distance so
-        subsequent keystrokes are swallowed until the user types back.
+        If already at position 0, the backspace is simply blocked.
 
         Returns:
             True if a real backspace should be sent to the application
@@ -96,22 +81,13 @@ class PlaybackBuffer:
             logger.debug("Backspace: index now %d", self.index)
             return True
         else:
-            self.negative_offset += 1
-            logger.debug(
-                "Backspace at start: negative_offset now %d",
-                self.negative_offset,
-            )
+            logger.debug("Backspace at start: blocked")
             return False
 
     @property
     def exhausted(self) -> bool:
-        """Whether the entire buffer has been typed out.
-
-        Only True when:
-        - index has reached the end of the code buffer
-        - There's no pending negative_offset to recover from
-        """
-        return self.index >= len(self.code) and self.negative_offset == 0
+        """Whether the entire buffer has been typed out."""
+        return self.index >= len(self.code)
 
     @property
     def remaining(self) -> int:
