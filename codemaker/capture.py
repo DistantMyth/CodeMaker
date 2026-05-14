@@ -95,7 +95,7 @@ def capture_screenshot(preferred_tool: str = "auto") -> bytes:
         RuntimeError: If no capture method succeeds.
     """
     if preferred_tool != "auto":
-        func = _TOOLS.get(preferred_tool)
+        func = _ALL_TOOLS.get(preferred_tool)
         if func is None:
             raise ValueError(f"Unknown screenshot tool: {preferred_tool}")
         result = func()
@@ -103,8 +103,9 @@ def capture_screenshot(preferred_tool: str = "auto") -> bytes:
             return result
         raise RuntimeError(f"Screenshot tool '{preferred_tool}' failed")
 
-    # Auto: try each method in order
-    for name, func in _TOOLS.items():
+    # Auto: detect compositor and try tools in the right order
+    tools = _get_tools_order() if sys.platform != "win32" else _ALL_TOOLS
+    for name, func in tools.items():
         try:
             result = func()
             if result is not None:
@@ -202,17 +203,109 @@ def _capture_pillow() -> Optional[bytes]:
         return None
 
 
+def _detect_compositor() -> str:
+    """Detect the currently running Wayland compositor or desktop environment.
+
+    Returns:
+        One of: 'hyprland', 'sway', 'wlroots', 'gnome', 'kde', 'x11', 'unknown'
+    """
+    # Check XDG_CURRENT_DESKTOP first (most reliable)
+    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+    session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+
+    # When running as sudo, these may be stripped — recover from process list
+    if not desktop:
+        try:
+            ps_output = subprocess.run(
+                ["ps", "-eo", "comm", "--no-headers"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.lower()
+
+            if "hyprland" in ps_output:
+                return "hyprland"
+            elif "sway" in ps_output:
+                return "sway"
+            elif "river" in ps_output:
+                return "wlroots"
+            elif "gnome-shell" in ps_output or "mutter" in ps_output:
+                return "gnome"
+            elif "plasmashell" in ps_output or "kwin" in ps_output:
+                return "kde"
+        except Exception:
+            pass
+
+    if "hyprland" in desktop:
+        return "hyprland"
+    elif "sway" in desktop:
+        return "sway"
+    elif desktop in ("gnome", "ubuntu:gnome", "gnome-xorg", "unity"):
+        return "gnome"
+    elif "kde" in desktop or "plasma" in desktop:
+        return "kde"
+
+    # Check HYPRLAND_INSTANCE_SIGNATURE (set by Hyprland)
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        return "hyprland"
+    if os.environ.get("SWAYSOCK"):
+        return "sway"
+
+    if session_type == "x11":
+        return "x11"
+
+    return "unknown"
+
+
+def _get_tools_order() -> dict[str, callable]:
+    """Return screenshot tools in priority order based on the active compositor.
+
+    This prevents gnome-screenshot from being selected on Hyprland when both
+    GNOME and Hyprland are installed on the same system.
+    """
+    compositor = _detect_compositor()
+    logger.debug("Detected compositor: %s", compositor)
+
+    if compositor in ("hyprland", "sway", "wlroots"):
+        # wlroots compositors: grim is the only correct tool
+        return {
+            "grim": _capture_grim,
+            "spectacle": _capture_spectacle,
+            "pillow": _capture_pillow,
+            # gnome-screenshot deliberately excluded — it connects to
+            # the GNOME D-Bus session and produces wrong/blank captures
+        }
+    elif compositor == "gnome":
+        return {
+            "gnome-screenshot": _capture_gnome_screenshot,
+            "grim": _capture_grim,
+            "pillow": _capture_pillow,
+        }
+    elif compositor == "kde":
+        return {
+            "spectacle": _capture_spectacle,
+            "grim": _capture_grim,
+            "pillow": _capture_pillow,
+        }
+    else:
+        # Unknown or X11: try everything
+        return {
+            "grim": _capture_grim,
+            "gnome-screenshot": _capture_gnome_screenshot,
+            "spectacle": _capture_spectacle,
+            "pillow": _capture_pillow,
+        }
+
+
 if sys.platform == "win32":
     def _capture_windows() -> Optional[bytes]:
         """Windows screenshot via Pillow ImageGrab."""
         return _capture_pillow()
 
-    _TOOLS = {
+    _ALL_TOOLS = {
         "windows": _capture_windows,
         "pillow": _capture_pillow,
     }
 else:
-    _TOOLS = {
+    _ALL_TOOLS = {
         "grim": _capture_grim,
         "gnome-screenshot": _capture_gnome_screenshot,
         "spectacle": _capture_spectacle,
