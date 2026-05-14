@@ -85,18 +85,25 @@ CodeMaker supports **up to 5 API providers + 1 local model**, tried in configura
 
 ### Recommended Setup
 
-Set Gemini as primary (fastest free tier), Groq as fallback (also free), and optionally Ollama for offline use:
+Set Gemini as primary (smartest), OpenRouter as free fallback, Groq as last-resort, and optionally Ollama for offline use:
 
 ```env
-PROVIDER_PRIORITY=1,2,local
+PROVIDER_PRIORITY=2,3,1,local
 
-PROVIDER_1_TYPE=gemini
-PROVIDER_1_KEY=your_gemini_key
-PROVIDER_1_MODEL=gemini-2.0-flash
+# Provider 1: Groq (fast but less capable)
+PROVIDER_1_TYPE=groq
+PROVIDER_1_KEY=your_groq_key
+PROVIDER_1_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
 
-PROVIDER_2_TYPE=groq
-PROVIDER_2_KEY=your_groq_key
-PROVIDER_2_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
+# Provider 2: Gemini (best code quality — tried first)
+PROVIDER_2_TYPE=gemini
+PROVIDER_2_KEY=your_gemini_key
+PROVIDER_2_MODEL=gemini-2.5-flash
+
+# Provider 3: OpenRouter (free vision fallback)
+PROVIDER_3_TYPE=openrouter
+PROVIDER_3_KEY=your_openrouter_key
+PROVIDER_3_MODEL=google/gemma-4-31b-it:free
 
 LOCAL_MODEL=qwen2.5vl:3b
 ```
