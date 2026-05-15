@@ -541,14 +541,16 @@ def _ensure_ollama_model(model: str, base_url: str) -> None:
                 logger.debug("Ollama model '%s' is available", model)
                 return
 
-            # Also check by stripping :latest suffix
-            model_base = model.split(":")[0]
-            for m in installed:
-                if m.split(":")[0] == model_base:
-                    logger.debug(
-                        "Ollama model '%s' found as '%s'", model, m
-                    )
-                    return
+            # If the user specified a base model without a tag (e.g. "minicpm-v"),
+            # and it is installed with ANY tag, accept it. But DO NOT match
+            # different tags if the user specifically requested one.
+            if ":" not in model:
+                for m in installed:
+                    if m.split(":")[0] == model:
+                        logger.debug(
+                            "Ollama model '%s' found as '%s'", model, m
+                        )
+                        return
     except Exception as ex:
         logger.warning("Could not check Ollama models: %s", ex)
 

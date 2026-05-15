@@ -106,8 +106,9 @@ PROVIDER_3_KEY=your_openrouter_key
 PROVIDER_3_MODEL=google/gemma-4-31b-it:free
 
 # Local: two-stage pipeline (vision extracts question, code model solves it)
-LOCAL_VISION_MODEL=qwen2.5vl:7b
+LOCAL_VISION_MODEL=minicpm-v
 LOCAL_CODE_MODEL=qwen2.5-coder:7b
+# LOCAL_CODE_MODEL_QUALITY=qwen2.5-coder:14b  # Uncomment for slower, higher quality code
 ```
 
 ---
@@ -496,13 +497,14 @@ All settings live in the `.env` file. Copy `.env.example` to `.env` and edit:
 
 ### Local Model Recommendations
 
-The two-stage pipeline loads models **sequentially** so each gets your full VRAM:
+The two-stage pipeline loads models **sequentially** so each gets your full VRAM. You can also enable **Quality Mode** (`LOCAL_CODE_MODEL_QUALITY`) to split a larger code model across your GPU VRAM and system RAM.
 
-| VRAM | Vision Model | Code Model | Quality |
-|:-----|:-------------|:-----------|:--------|
-| **4 GB** | `minicpm-v` (~1 GB) | `qwen2.5-coder:3b` (~2.5 GB) | ⭐⭐⭐ Good for simple problems |
-| **6 GB** | `qwen2.5vl:7b` (~5 GB) | `qwen2.5-coder:7b` (~5 GB) | ⭐⭐⭐⭐ Best for this VRAM tier |
-| **12+ GB** | `qwen2.5vl:7b` (~5 GB) | `deepseek-coder-v2:16b` (~10 GB) | ⭐⭐⭐⭐⭐ Near cloud quality |
+| Setup | Vision Model (Extract) | Code Model (Generate) | Quality | Speed |
+|:-----|:-------------|:-----------|:--------|:------|
+| **4 GB VRAM** | `minicpm-v` (~1 GB) | `qwen2.5-coder:3b` (~2.5 GB) | ⭐⭐⭐ Good | ⚡ Fast |
+| **6 GB VRAM** | `minicpm-v` (~1 GB) | `qwen2.5-coder:7b` (~5 GB) | ⭐⭐⭐⭐ Very Good | ⚡ Fast |
+| **6 GB VRAM + 8 GB RAM** | `minicpm-v` (~1 GB) | **Quality Mode:** `qwen2.5-coder:14b` (~9 GB) | ⭐⭐⭐⭐⭐ Excellent | 🐢 Slower (~5-10 tok/s) |
+| **6 GB VRAM + 12 GB RAM** | `minicpm-v` (~1 GB) | **Quality Mode:** `qwen2.5-coder:32b` (~20 GB) | ⭐⭐⭐⭐⭐⭐ Frontier | 🐌 Slow (~2-5 tok/s) |
 
 ### Available Key Names
 
