@@ -88,6 +88,7 @@ def _parse_providers() -> list[ProviderConfig]:
     local_model = os.getenv("LOCAL_MODEL", "").strip()
     local_vision_model = os.getenv("LOCAL_VISION_MODEL", "").strip()
     local_code_model = os.getenv("LOCAL_CODE_MODEL", "").strip()
+    local_quality_code_model = os.getenv("LOCAL_CODE_MODEL_QUALITY", "").strip()
     local_vision_prompt = os.getenv("LOCAL_VISION_PROMPT", "").strip()
     ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434").strip()
 
@@ -99,13 +100,15 @@ def _parse_providers() -> list[ProviderConfig]:
             base_url=ollama_url,
             vision_model=local_vision_model,
             code_model=local_code_model,
+            quality_code_model=local_quality_code_model,
             vision_prompt=local_vision_prompt,
         )
         providers["local"] = local_cfg
         if local_vision_model and local_code_model:
+            quality_info = f" quality={local_quality_code_model}" if local_quality_code_model else ""
             logger.debug(
-                "Local pipeline: vision=%s code=%s url=%s",
-                local_vision_model, local_code_model, ollama_url,
+                "Local pipeline: vision=%s code=%s%s url=%s",
+                local_vision_model, local_code_model, quality_info, ollama_url,
             )
         else:
             logger.debug("Local provider: model=%s url=%s", local_model, ollama_url)

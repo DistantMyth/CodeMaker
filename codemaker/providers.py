@@ -53,9 +53,10 @@ class ProviderConfig:
     base_url: str = ""
 
     # Two-stage local pipeline (ollama only)
-    vision_model: str = ""   # e.g. qwen2.5vl:7b
-    code_model: str = ""     # e.g. qwen2.5-coder:7b
-    vision_prompt: str = ""  # Prompt for the vision extraction step
+    vision_model: str = ""       # e.g. minicpm-v
+    code_model: str = ""         # e.g. qwen2.5-coder:7b (fast, fits in VRAM)
+    quality_code_model: str = "" # e.g. qwen2.5-coder:14b (slow, GPU+CPU split)
+    vision_prompt: str = ""      # Prompt for the vision extraction step
 
     @property
     def is_pipeline(self) -> bool:
@@ -467,11 +468,29 @@ def _call_ollama_pipeline(
     _unload_ollama_model(cfg.vision_model, base_url)
 
     # ── Stage 2: Code generation ──
-    logger.info("[pipeline] Stage 2: Loading code model '%s'...", cfg.code_model)
-    _ensure_ollama_model(cfg.code_model, base_url)
+    # Choose between quality model (large, GPU+CPU split) and fast model (fits in VRAM)
+    use_quality = bool(cfg.quality_code_model)
+    active_code_model = cfg.quality_code_model if use_quality else cfg.code_model
+
+    if use_quality:
+        logger.info(
+            "[pipeline] Stage 2: Loading QUALITY code model '%s' (GPU+CPU split, slower)...",
+            active_code_model,
+        )
+        # Drop caches again — quality model needs every byte of RAM
+        _drop_filesystem_cache()
+    else:
+        logger.info("[pipeline] Stage 2: Loading code model '%s'...", active_code_model)
+
+    _ensure_ollama_model(active_code_model, base_url)
+
+    # Quality model gets larger context and longer timeout since it runs
+    # partially on CPU (~5-10 tok/s vs ~20+ tok/s for the fast model)
+    code_ctx = 8192 if use_quality else 4096
+    code_timeout = 600 if use_quality else 300  # 10 min for quality, 5 min for fast
 
     code_payload = {
-        "model": cfg.code_model,
+        "model": active_code_model,
         "messages": [
             {
                 "role": "user",
@@ -483,12 +502,12 @@ def _call_ollama_pipeline(
         "options": {
             "temperature": 0.2,
             "num_predict": 4096,
-            "num_ctx": 4096,     # Enough for problem + code, avoids huge KV cache
+            "num_ctx": code_ctx,
             "num_gpu": 99,       # Offload as many layers to GPU as possible
         },
     }
 
-    with httpx.Client(timeout=300) as client:  # Code gen can be slow on 7B
+    with httpx.Client(timeout=code_timeout) as client:
         resp = client.post(f"{base_url}/api/chat", json=code_payload)
 
     if resp.status_code != 200:
@@ -500,10 +519,11 @@ def _call_ollama_pipeline(
     if not code_text:
         raise RuntimeError("Code model returned empty response")
 
-    logger.info("[pipeline] Code generated: %d chars", len(code_text))
+    logger.info("[pipeline] Code generated: %d chars (%s mode)", len(code_text),
+                "quality" if use_quality else "fast")
 
-    # Unload code model too (free VRAM for desktop usage)
-    _unload_ollama_model(cfg.code_model, base_url)
+    # Unload code model too (free VRAM+RAM for desktop usage)
+    _unload_ollama_model(active_code_model, base_url)
 
     return code_text
 
