@@ -26,6 +26,7 @@ class Config:
     trigger_sequence: list[str]
     screenshot_tool: str
     kill_combo: frozenset[str]
+    reset_combo: frozenset[str]
     keyboard_device: Optional[str]
     providers: list[ProviderConfig] = field(default_factory=list)
 
@@ -85,16 +86,29 @@ def _parse_providers() -> list[ProviderConfig]:
 
     # ── Parse local Ollama provider ──
     local_model = os.getenv("LOCAL_MODEL", "").strip()
-    if local_model:
-        ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434").strip()
+    local_vision_model = os.getenv("LOCAL_VISION_MODEL", "").strip()
+    local_code_model = os.getenv("LOCAL_CODE_MODEL", "").strip()
+    local_vision_prompt = os.getenv("LOCAL_VISION_PROMPT", "").strip()
+    ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434").strip()
+
+    if local_model or (local_vision_model and local_code_model):
         local_cfg = ProviderConfig(
             name="local",
             provider_type="ollama",
             model=local_model,
             base_url=ollama_url,
+            vision_model=local_vision_model,
+            code_model=local_code_model,
+            vision_prompt=local_vision_prompt,
         )
         providers["local"] = local_cfg
-        logger.debug("Local provider: model=%s url=%s", local_model, ollama_url)
+        if local_vision_model and local_code_model:
+            logger.debug(
+                "Local pipeline: vision=%s code=%s url=%s",
+                local_vision_model, local_code_model, ollama_url,
+            )
+        else:
+            logger.debug("Local provider: model=%s url=%s", local_model, ollama_url)
 
     # ── Legacy fallback: if no providers, try old GEMINI_API_KEY ──
     if not providers:
@@ -157,6 +171,9 @@ def load_config(env_path: Optional[str] = None) -> Config:
     kill_raw = os.getenv("KILL_COMBO", "ctrl+shift+escape")
     kill_combo = frozenset(k.strip().lower() for k in kill_raw.split("+") if k.strip())
 
+    reset_raw = os.getenv("RESET_COMBO", "ctrl+shift+r")
+    reset_combo = frozenset(k.strip().lower() for k in reset_raw.split("+") if k.strip())
+
     keyboard_device = os.getenv("KEYBOARD_DEVICE", "").strip() or None
 
     providers = _parse_providers()
@@ -168,6 +185,7 @@ def load_config(env_path: Optional[str] = None) -> Config:
         trigger_sequence=trigger_sequence,
         screenshot_tool=os.getenv("SCREENSHOT_TOOL", "auto"),
         kill_combo=kill_combo,
+        reset_combo=reset_combo,
         keyboard_device=keyboard_device,
         providers=providers,
     )

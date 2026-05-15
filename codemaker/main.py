@@ -101,6 +101,16 @@ def main(env_path: Optional[str] = None) -> None:
                 platform.stop()
                 return KeyAction.PASS_THROUGH
 
+            # ─── Reset to Observer (active during CAPTURE and PLAYBACK) ───
+            if config.reset_combo and config.reset_combo.issubset(check_keys):
+                if state.current in (ServiceState.CAPTURE, ServiceState.PLAYBACK):
+                    logger.info("RESET COMBO detected! Returning to observer mode.")
+                    state.reset()
+                    trigger.reset()
+                    with buf_lock:
+                        playback_buf = None
+                    return KeyAction.PASS_THROUGH
+
         # ─── Only process KEY_DOWN events for state logic ───
         if event_type != KeyEventType.KEY_DOWN:
             return KeyAction.PASS_THROUGH
@@ -177,7 +187,7 @@ def main(env_path: Optional[str] = None) -> None:
 
     # Build provider chain display
     provider_chain = " → ".join(
-        f"{p.name}({p.provider_type}:{p.model.split('/')[-1][:15]})"
+        f"{p.name}({p.provider_type}:{p.model.split('/')[-1][:15] if p.model else 'pipeline'})"
         for p in config.providers if p.is_configured
     )
 
@@ -188,6 +198,7 @@ def main(env_path: Optional[str] = None) -> None:
         "║                                          ║\n"
         f"║  Trigger: {','.join(config.trigger_sequence):<29}║\n"
         f"║  Kill:    {'+'.join(sorted(config.kill_combo)):<29}║\n"
+        f"║  Reset:   {'+'.join(sorted(config.reset_combo)):<29}║\n"
         "║                                          ║\n"
         "║  Waiting for trigger sequence...          ║\n"
         "╚══════════════════════════════════════════╝\n"

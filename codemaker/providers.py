@@ -22,8 +22,9 @@ from .utils import strip_code_fences, strip_indentation
 
 logger = logging.getLogger("codemaker.providers")
 
-_MAX_RETRIES = 1
-_RETRY_DELAY = 1.5  # seconds
+_MAX_RETRIES = 2
+_RETRY_DELAY = 1.5  # seconds (base delay)
+_RATE_LIMIT_DELAY = 5.0  # seconds (longer delay for 429s)
 _TIMEOUT = 60  # seconds
 
 
@@ -51,11 +52,21 @@ class ProviderConfig:
     model: str = ""
     base_url: str = ""
 
+    # Two-stage local pipeline (ollama only)
+    vision_model: str = ""   # e.g. qwen2.5vl:7b
+    code_model: str = ""     # e.g. qwen2.5-coder:7b
+    vision_prompt: str = ""  # Prompt for the vision extraction step
+
+    @property
+    def is_pipeline(self) -> bool:
+        """Check if this is a two-stage vision→code pipeline."""
+        return bool(self.vision_model and self.code_model)
+
     @property
     def is_configured(self) -> bool:
         """Check if this provider has minimum required config."""
         if self.provider_type == "ollama":
-            return bool(self.model)
+            return bool(self.model) or self.is_pipeline
         if self.provider_type == "gemini":
             return bool(self.api_key and self.model)
         # OpenAI-compatible providers
@@ -164,19 +175,17 @@ def _call_openai_compatible(
 def _call_ollama(
     cfg: ProviderConfig, image_bytes: bytes, prompt: str
 ) -> str:
-    """Call local Ollama API with vision support."""
+    """Call local Ollama API with vision support.
+
+    If the provider has both vision_model and code_model configured,
+    delegates to the two-stage pipeline instead.
+    """
+    if cfg.is_pipeline:
+        return _call_ollama_pipeline(cfg, image_bytes, prompt)
+
     base_url = cfg.base_url or "http://localhost:11434"
 
-    # Check if Ollama is running
-    try:
-        with httpx.Client(timeout=5) as client:
-            client.get(f"{base_url}/api/version")
-    except (httpx.ConnectError, httpx.TimeoutException):
-        raise RuntimeError(
-            "Ollama is not running. Start it with: ollama serve"
-        )
-
-    # Check if model is available, auto-pull if not
+    _check_ollama_running(base_url)
     _ensure_ollama_model(cfg.model, base_url)
 
     b64_image = base64.b64encode(image_bytes).decode("ascii")
@@ -197,7 +206,7 @@ def _call_ollama(
         },
     }
 
-    with httpx.Client(timeout=120) as client:  # Local can be slow
+    with httpx.Client(timeout=120) as client:
         resp = client.post(f"{base_url}/api/chat", json=payload)
 
     if resp.status_code != 200:
@@ -208,6 +217,167 @@ def _call_ollama(
     if not text:
         raise RuntimeError("Ollama returned empty response")
     return text
+
+
+def _check_ollama_running(base_url: str) -> None:
+    """Verify the Ollama server is reachable, auto-starting it if needed."""
+    try:
+        with httpx.Client(timeout=5) as client:
+            client.get(f"{base_url}/api/version")
+        return  # Already running
+    except (httpx.ConnectError, httpx.TimeoutException):
+        pass  # Not running — try to start it
+
+    # Attempt to auto-start Ollama
+    ollama_path = shutil.which("ollama")
+    if not ollama_path:
+        raise RuntimeError(
+            "Ollama is not installed. Install it from: https://ollama.com"
+        )
+
+    logger.info("Ollama not running — starting automatically...")
+    try:
+        subprocess.Popen(
+            [ollama_path, "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,  # Detach from parent process
+        )
+    except OSError as ex:
+        raise RuntimeError(f"Failed to start Ollama: {ex}")
+
+    # Wait for Ollama to become ready (up to 15 seconds)
+    for i in range(30):
+        time.sleep(0.5)
+        try:
+            with httpx.Client(timeout=2) as client:
+                client.get(f"{base_url}/api/version")
+            logger.info("Ollama started successfully (took ~%.1fs)", (i + 1) * 0.5)
+            return
+        except (httpx.ConnectError, httpx.TimeoutException):
+            continue
+
+    raise RuntimeError(
+        "Ollama was started but failed to become ready within 15 seconds. "
+        "Check `ollama serve` manually for errors."
+    )
+
+
+def _unload_ollama_model(model: str, base_url: str) -> None:
+    """Unload a model from Ollama VRAM by setting keep_alive to 0."""
+    try:
+        with httpx.Client(timeout=30) as client:
+            client.post(
+                f"{base_url}/api/generate",
+                json={"model": model, "prompt": "", "keep_alive": 0},
+            )
+        logger.info("Unloaded model '%s' from VRAM", model)
+    except Exception as ex:
+        logger.warning("Failed to unload model '%s': %s", model, ex)
+
+
+def _call_ollama_pipeline(
+    cfg: ProviderConfig, image_bytes: bytes, prompt: str
+) -> str:
+    """Two-stage local pipeline: vision model extracts question, code model generates code.
+
+    Stage 1: Load vision model → extract coding question from screenshot → unload
+    Stage 2: Load code model → generate code from extracted question → return
+
+    This allows using the full VRAM for each model separately, resulting in
+    better quality from larger, specialized models.
+    """
+    base_url = cfg.base_url or "http://localhost:11434"
+
+    _check_ollama_running(base_url)
+
+    # ── Stage 1: Vision extraction ──
+    logger.info("[pipeline] Stage 1: Loading vision model '%s'...", cfg.vision_model)
+    _ensure_ollama_model(cfg.vision_model, base_url)
+
+    vision_prompt = cfg.vision_prompt or (
+        "Extract only the coding problem or question from this screenshot. "
+        "Ignore all UI elements, navigation bars, buttons, ads, and unrelated text. "
+        "Output ONLY the problem statement, input/output format, constraints, "
+        "and examples. Do not solve it."
+    )
+
+    b64_image = base64.b64encode(image_bytes).decode("ascii")
+
+    vision_payload = {
+        "model": cfg.vision_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": vision_prompt,
+                "images": [b64_image],
+            }
+        ],
+        "stream": False,
+        "options": {
+            "temperature": 0.1,  # Low temp for accurate extraction
+            "num_predict": 2048,
+        },
+    }
+
+    with httpx.Client(timeout=180) as client:
+        resp = client.post(f"{base_url}/api/chat", json=vision_payload)
+
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Ollama vision error {resp.status_code}: {resp.text[:500]}"
+        )
+
+    extracted_question = resp.json().get("message", {}).get("content", "")
+    if not extracted_question:
+        raise RuntimeError("Vision model returned empty extraction")
+
+    logger.info(
+        "[pipeline] Extracted question: %d chars", len(extracted_question)
+    )
+    logger.debug("[pipeline] Question preview: %s...", extracted_question[:200])
+
+    # ── Unload vision model to free VRAM ──
+    logger.info("[pipeline] Unloading vision model...")
+    _unload_ollama_model(cfg.vision_model, base_url)
+
+    # ── Stage 2: Code generation ──
+    logger.info("[pipeline] Stage 2: Loading code model '%s'...", cfg.code_model)
+    _ensure_ollama_model(cfg.code_model, base_url)
+
+    code_payload = {
+        "model": cfg.code_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": f"{prompt}\n\nHere is the problem:\n\n{extracted_question}",
+            }
+        ],
+        "stream": False,
+        "options": {
+            "temperature": 0.2,
+            "num_predict": 4096,
+        },
+    }
+
+    with httpx.Client(timeout=300) as client:  # Code gen can be slow on 7B
+        resp = client.post(f"{base_url}/api/chat", json=code_payload)
+
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Ollama code error {resp.status_code}: {resp.text[:500]}"
+        )
+
+    code_text = resp.json().get("message", {}).get("content", "")
+    if not code_text:
+        raise RuntimeError("Code model returned empty response")
+
+    logger.info("[pipeline] Code generated: %d chars", len(code_text))
+
+    # Unload code model too (free VRAM for desktop usage)
+    _unload_ollama_model(cfg.code_model, base_url)
+
+    return code_text
 
 
 def _ensure_ollama_model(model: str, base_url: str) -> None:
@@ -322,7 +492,12 @@ def _call_provider(
                 "[%s] Error (attempt %d): %s", cfg.name, attempt + 1, ex
             )
             if attempt < _MAX_RETRIES:
-                time.sleep(_RETRY_DELAY * (attempt + 1))
+                # Use longer delay for rate limits (429)
+                is_rate_limit = "429" in str(ex) or "rate" in str(ex).lower()
+                delay = _RATE_LIMIT_DELAY if is_rate_limit else _RETRY_DELAY
+                delay *= (attempt + 1)
+                logger.debug("Retrying in %.1fs...", delay)
+                time.sleep(delay)
 
     raise RuntimeError(
         f"[{cfg.name}] Failed after {_MAX_RETRIES + 1} attempts: {last_error}"

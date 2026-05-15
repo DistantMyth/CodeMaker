@@ -85,7 +85,7 @@ CodeMaker supports **up to 5 API providers + 1 local model**, tried in configura
 
 ### Recommended Setup
 
-Set Gemini as primary (smartest), OpenRouter as free fallback, Groq as last-resort, and optionally Ollama for offline use:
+Set Gemini as primary (smartest), OpenRouter as free fallback, Groq as last-resort, and optionally a local two-stage pipeline for offline use:
 
 ```env
 PROVIDER_PRIORITY=2,3,1,local
@@ -105,7 +105,9 @@ PROVIDER_3_TYPE=openrouter
 PROVIDER_3_KEY=your_openrouter_key
 PROVIDER_3_MODEL=google/gemma-4-31b-it:free
 
-LOCAL_MODEL=qwen2.5vl:3b
+# Local: two-stage pipeline (vision extracts question, code model solves it)
+LOCAL_VISION_MODEL=qwen2.5vl:7b
+LOCAL_CODE_MODEL=qwen2.5-coder:7b
 ```
 
 ---
@@ -474,6 +476,7 @@ All settings live in the `.env` file. Copy `.env.example` to `.env` and edit:
 | `TRIGGER_SEQUENCE` | `tab,tab,tab,backspace,backspace,backspace` | Comma-separated key names that activate capture |
 | `SCREENSHOT_TOOL` | `auto` | `grim`, `gnome-screenshot`, `spectacle`, `pillow`, or `auto` |
 | `KILL_COMBO` | `ctrl+shift+escape` | Emergency kill combo to exit instantly |
+| `RESET_COMBO` | `ctrl+shift+r` | Jump back to observer mode (cancels playback) |
 | `KEYBOARD_DEVICE` | *(auto-detect)* | Linux only: explicit device path like `/dev/input/event10` |
 
 ### AI Provider Settings
@@ -485,8 +488,21 @@ All settings live in the `.env` file. Copy `.env.example` to `.env` and edit:
 | `PROVIDER_N_KEY` | API key for the provider |
 | `PROVIDER_N_MODEL` | Model name/ID |
 | `PROVIDER_N_BASE_URL` | Custom base URL (for `openai` type or overrides) |
-| `LOCAL_MODEL` | Ollama model name (e.g., `qwen2.5vl:3b`) — auto-downloaded on first use |
+| `LOCAL_MODEL` | Single Ollama model for vision+code (simple mode) |
+| `LOCAL_VISION_MODEL` | Vision model for question extraction (pipeline mode, e.g., `qwen2.5vl:7b`) |
+| `LOCAL_CODE_MODEL` | Code model for solution generation (pipeline mode, e.g., `qwen2.5-coder:7b`) |
+| `LOCAL_VISION_PROMPT` | Custom prompt for the vision extraction step |
 | `OLLAMA_URL` | Ollama server URL (default: `http://localhost:11434`) |
+
+### Local Model Recommendations
+
+The two-stage pipeline loads models **sequentially** so each gets your full VRAM:
+
+| VRAM | Vision Model | Code Model | Quality |
+|:-----|:-------------|:-----------|:--------|
+| **4 GB** | `minicpm-v` (~1 GB) | `qwen2.5-coder:3b` (~2.5 GB) | ⭐⭐⭐ Good for simple problems |
+| **6 GB** | `qwen2.5vl:7b` (~5 GB) | `qwen2.5-coder:7b` (~5 GB) | ⭐⭐⭐⭐ Best for this VRAM tier |
+| **12+ GB** | `qwen2.5vl:7b` (~5 GB) | `deepseek-coder-v2:16b` (~10 GB) | ⭐⭐⭐⭐⭐ Near cloud quality |
 
 ### Available Key Names
 
