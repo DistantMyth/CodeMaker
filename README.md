@@ -52,7 +52,7 @@
        └─────────────────── buffer exhausted ─────────────────────────────┘
 ```
 
-1. **OBSERVER** — The service silently monitors your keyboard for the trigger sequence (default: `Tab Tab Tab Backspace Backspace Backspace`)
+1. **OBSERVER** — The service silently monitors your keyboard for the trigger sequence (default: `t a a r u n`)
 2. **CAPTURE** — On trigger, it silently screenshots your screen
 3. **PROCESSING** — The screenshot is sent to the configured AI provider (with automatic fallback to the next provider on failure)
 4. **PLAYBACK** — Every key you press now outputs the next character from the AI-generated code. Indentation is stripped so your editor's auto-indent handles formatting. Backspace moves backward through the code buffer.
@@ -103,7 +103,7 @@ PROVIDER_2_MODEL=gemini-2.5-flash
 # Provider 3: OpenRouter (free vision fallback)
 PROVIDER_3_TYPE=openrouter
 PROVIDER_3_KEY=your_openrouter_key
-PROVIDER_3_MODEL=google/gemma-4-31b-it:free
+PROVIDER_3_MODEL=openrouter/free
 
 # Local: two-stage pipeline (vision extracts question, code model solves it)
 LOCAL_VISION_MODEL=minicpm-v
@@ -474,7 +474,7 @@ All settings live in the `.env` file. Copy `.env.example` to `.env` and edit:
 | Variable | Default | Description |
 |:---------|:--------|:------------|
 | `SYSTEM_PROMPT` | `Solve this in c and have no comments at all.` | Instruction sent to the AI with the screenshot |
-| `TRIGGER_SEQUENCE` | `tab,tab,tab,backspace,backspace,backspace` | Comma-separated key names that activate capture |
+| `TRIGGER_SEQUENCE` | `t,a,a,r,u,n` | Comma-separated key names that activate capture |
 | `SCREENSHOT_TOOL` | `auto` | `grim`, `gnome-screenshot`, `spectacle`, `pillow`, or `auto` |
 | `KILL_COMBO` | `ctrl+shift+escape` | Emergency kill combo to exit instantly |
 | `RESET_COMBO` | `ctrl+shift+r` | Jump back to observer mode (cancels playback) |
@@ -533,7 +533,7 @@ You'll see a startup banner showing the active provider chain:
 ╔══════════════════════════════════════════╗
 ║         CodeMaker v0.1.0 Active          ║
 ║                                          ║
-║  Trigger: tab,tab,tab,backspace,...      ║
+║  Trigger: t,a,a,r,u,n                    ║
 ║  Kill:    ctrl+escape+shift              ║
 ║                                          ║
 ║  Waiting for trigger sequence...          ║
@@ -544,7 +544,7 @@ You'll see a startup banner showing the active provider chain:
 ### Workflow
 
 1. Open any text editor, IDE, or code input field
-2. Type the trigger sequence: **Tab Tab Tab Backspace Backspace Backspace**
+2. Type the trigger sequence: **t a a r u n**
 3. Wait 2–5 seconds for the screenshot to be captured and processed
 4. Start typing anything — every key you press outputs the next character of the AI-generated code
 5. Use **Backspace** to move backward in the code buffer

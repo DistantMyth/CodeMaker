@@ -209,7 +209,7 @@ def _call_ollama(
         },
     }
 
-    with httpx.Client(timeout=120) as client:
+    with httpx.Client(timeout=None) as client:
         resp = client.post(f"{base_url}/api/chat", json=payload)
 
     if resp.status_code != 200:
@@ -406,6 +406,16 @@ def _call_ollama_pipeline(
 
     _check_ollama_running(base_url)
 
+    # ── Ensure both models are downloaded upfront ──
+    # Doing this before anything else ensures the user sees any necessary
+    # download progress bars immediately, rather than waiting for Stage 1
+    # to finish before finding out Stage 2 needs a download.
+    logger.info("[pipeline] Checking model availability...")
+    use_quality = bool(cfg.quality_code_model)
+    active_code_model = cfg.quality_code_model if use_quality else cfg.code_model
+    _ensure_ollama_model(cfg.vision_model, base_url)
+    _ensure_ollama_model(active_code_model, base_url)
+
     # ── Pre-cleanup: unload any leftover models from previous runs ──
     # Uses /api/ps to only unload what's actually loaded — avoids the
     # load-to-unload paradox that was causing OOM errors.
@@ -415,7 +425,6 @@ def _call_ollama_pipeline(
 
     # ── Stage 1: Vision extraction ──
     logger.info("[pipeline] Stage 1: Loading vision model '%s'...", cfg.vision_model)
-    _ensure_ollama_model(cfg.vision_model, base_url)
 
     vision_prompt = cfg.vision_prompt or (
         "Extract only the coding problem or question from this screenshot. "
@@ -441,11 +450,10 @@ def _call_ollama_pipeline(
             "temperature": 0.1,  # Low temp for accurate extraction
             "num_predict": 2048,
             "num_ctx": 2048,     # Small context — we only extract a problem statement
-            "num_gpu": 99,       # Offload as many layers to GPU as possible
         },
     }
 
-    with httpx.Client(timeout=180) as client:
+    with httpx.Client(timeout=None) as client:
         resp = client.post(f"{base_url}/api/chat", json=vision_payload)
 
     if resp.status_code != 200:
@@ -482,12 +490,9 @@ def _call_ollama_pipeline(
     else:
         logger.info("[pipeline] Stage 2: Loading code model '%s'...", active_code_model)
 
-    _ensure_ollama_model(active_code_model, base_url)
-
-    # Quality model gets larger context and longer timeout since it runs
+    # Quality model gets larger context since it runs
     # partially on CPU (~5-10 tok/s vs ~20+ tok/s for the fast model)
     code_ctx = 8192 if use_quality else 4096
-    code_timeout = 600 if use_quality else 300  # 10 min for quality, 5 min for fast
 
     code_payload = {
         "model": active_code_model,
@@ -503,11 +508,10 @@ def _call_ollama_pipeline(
             "temperature": 0.2,
             "num_predict": 4096,
             "num_ctx": code_ctx,
-            "num_gpu": 99,       # Offload as many layers to GPU as possible
         },
     }
 
-    with httpx.Client(timeout=code_timeout) as client:
+    with httpx.Client(timeout=None) as client:
         resp = client.post(f"{base_url}/api/chat", json=code_payload)
 
     if resp.status_code != 200:
