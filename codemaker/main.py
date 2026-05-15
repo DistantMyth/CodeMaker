@@ -19,7 +19,7 @@ from .state import ServiceState, StateManager
 from .trigger import TriggerDetector
 from .playback import PlaybackBuffer
 from .capture import capture_screenshot
-from .providers import process_screenshot
+from .providers import process_screenshot, cleanup_local_models
 from .utils import setup_logging
 from .platform.base import KeyAction, KeyEventType, PlatformHook
 
@@ -98,6 +98,12 @@ def main(env_path: Optional[str] = None) -> None:
             check_keys = held | {key_name}
             if config.kill_combo and config.kill_combo.issubset(check_keys):
                 logger.info("KILL COMBO detected! Shutting down.")
+                # Free VRAM before exit
+                threading.Thread(
+                    target=cleanup_local_models,
+                    args=(config.providers,),
+                    daemon=True,
+                ).start()
                 platform.stop()
                 return KeyAction.PASS_THROUGH
 
@@ -109,6 +115,12 @@ def main(env_path: Optional[str] = None) -> None:
                     trigger.reset()
                     with buf_lock:
                         playback_buf = None
+                    # Free VRAM in background (don't block key handler)
+                    threading.Thread(
+                        target=cleanup_local_models,
+                        args=(config.providers,),
+                        daemon=True,
+                    ).start()
                     return KeyAction.PASS_THROUGH
 
         # ─── Only process KEY_DOWN events for state logic ───

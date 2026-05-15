@@ -556,3 +556,36 @@ def process_screenshot(
     raise RuntimeError(
         "All AI providers failed:\n" + "\n".join(f"  • {e}" for e in errors)
     )
+
+
+def cleanup_local_models(providers: list[ProviderConfig]) -> None:
+    """Force-unload all Ollama models from VRAM.
+
+    Called on reset combo or kill switch to free GPU memory immediately,
+    even if the pipeline thread is still running.
+    """
+    for cfg in providers:
+        if cfg.provider_type != "ollama":
+            continue
+
+        base_url = cfg.base_url or "http://localhost:11434"
+
+        # Check if Ollama is reachable (don't auto-start for cleanup)
+        try:
+            with httpx.Client(timeout=2) as client:
+                client.get(f"{base_url}/api/version")
+        except (httpx.ConnectError, httpx.TimeoutException):
+            continue  # Ollama not running, nothing to clean up
+
+        # Unload all models associated with this provider
+        models_to_unload = set()
+        if cfg.model:
+            models_to_unload.add(cfg.model)
+        if cfg.vision_model:
+            models_to_unload.add(cfg.vision_model)
+        if cfg.code_model:
+            models_to_unload.add(cfg.code_model)
+
+        for model in models_to_unload:
+            logger.info("Cleanup: unloading '%s' from VRAM...", model)
+            _unload_ollama_model(model, base_url)
