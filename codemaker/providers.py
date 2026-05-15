@@ -18,7 +18,7 @@ from typing import Optional
 
 import httpx
 
-from .utils import strip_code_fences, strip_indentation
+from .utils import strip_code_fences, strip_c_comments, strip_indentation
 
 logger = logging.getLogger("codemaker.providers")
 
@@ -200,9 +200,11 @@ def _call_ollama(
             }
         ],
         "stream": False,
+        "keep_alive": 0,  # Unload after inference to free RAM
         "options": {
             "temperature": 0.2,
             "num_predict": 4096,
+            "num_ctx": 4096,     # Limit context to avoid huge KV cache allocation
         },
     }
 
@@ -220,7 +222,12 @@ def _call_ollama(
 
 
 def _check_ollama_running(base_url: str) -> None:
-    """Verify the Ollama server is reachable, auto-starting it if needed."""
+    """Verify the Ollama server is reachable, auto-starting it if needed.
+
+    Prefers systemctl to avoid spawning a rogue ``ollama serve`` process
+    that conflicts with the systemd unit (which causes a restart loop
+    and "address already in use" errors).
+    """
     try:
         with httpx.Client(timeout=5) as client:
             client.get(f"{base_url}/api/version")
@@ -236,15 +243,39 @@ def _check_ollama_running(base_url: str) -> None:
         )
 
     logger.info("Ollama not running — starting automatically...")
-    try:
-        subprocess.Popen(
-            [ollama_path, "serve"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,  # Detach from parent process
-        )
-    except OSError as ex:
-        raise RuntimeError(f"Failed to start Ollama: {ex}")
+
+    # Prefer systemctl (avoids conflicting with systemd-managed service)
+    started = False
+    systemctl_path = shutil.which("systemctl")
+    if systemctl_path:
+        try:
+            result = subprocess.run(
+                [systemctl_path, "start", "ollama"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                logger.info("Started Ollama via systemctl")
+                started = True
+            else:
+                logger.debug(
+                    "systemctl start ollama failed (rc=%d): %s",
+                    result.returncode, result.stderr.strip(),
+                )
+        except (OSError, subprocess.TimeoutExpired) as ex:
+            logger.debug("systemctl start failed: %s", ex)
+
+    # Fallback: direct ollama serve (only if systemctl didn't work)
+    if not started:
+        try:
+            subprocess.Popen(
+                [ollama_path, "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,  # Detach from parent process
+            )
+            logger.info("Started Ollama via direct 'ollama serve'")
+        except OSError as ex:
+            raise RuntimeError(f"Failed to start Ollama: {ex}")
 
     # Wait for Ollama to become ready (up to 15 seconds)
     for i in range(30):
@@ -263,17 +294,100 @@ def _check_ollama_running(base_url: str) -> None:
     )
 
 
+def _drop_filesystem_cache() -> None:
+    """Try to drop Linux filesystem caches to reclaim buff/cache memory.
+
+    Ollama's memory check counts 'available' memory (free + reclaimable),
+    but filesystem cache from recent large downloads (model pulls) can
+    make 'available' appear lower than it should be. Dropping caches
+    forces the OS to reclaim that memory.
+
+    Requires root privileges (which CodeMaker typically runs with).
+    Silently ignored if not running as root.
+    """
+    try:
+        import os
+        # sync + drop pagecache only (1 = pagecache, 2 = dentries/inodes, 3 = both)
+        os.sync()
+        with open("/proc/sys/vm/drop_caches", "w") as f:
+            f.write("1\n")
+        logger.info("Dropped filesystem caches to reclaim memory")
+    except (PermissionError, OSError) as ex:
+        logger.debug("Could not drop caches (need root): %s", ex)
+
+
+def _get_loaded_models(base_url: str) -> set[str]:
+    """Query Ollama /api/ps to get the set of currently loaded model names."""
+    try:
+        with httpx.Client(timeout=5) as client:
+            resp = client.get(f"{base_url}/api/ps")
+        if resp.status_code == 200:
+            models = resp.json().get("models", [])
+            return {m.get("name", "") for m in models if m.get("name")}
+    except Exception as ex:
+        logger.debug("Could not query loaded models: %s", ex)
+    return set()
+
+
 def _unload_ollama_model(model: str, base_url: str) -> None:
-    """Unload a model from Ollama VRAM by setting keep_alive to 0."""
+    """Unload a model from Ollama VRAM/RAM.
+
+    First checks /api/ps to see if the model is actually loaded.
+    If not loaded, skips entirely to avoid the load-then-unload paradox
+    where Ollama loads the model into RAM just to process the keep_alive=0 request.
+    After sending the unload, polls /api/ps until the model disappears.
+    """
+    # Check if model is actually loaded before trying to unload
+    loaded = _get_loaded_models(base_url)
+    model_loaded = any(
+        model == m or model.split(":")[0] == m.split(":")[0]
+        for m in loaded
+    )
+    if not model_loaded:
+        logger.debug("Model '%s' not currently loaded, skipping unload", model)
+        return
+
     try:
         with httpx.Client(timeout=30) as client:
             client.post(
                 f"{base_url}/api/generate",
                 json={"model": model, "prompt": "", "keep_alive": 0},
             )
-        logger.info("Unloaded model '%s' from VRAM", model)
+        logger.info("Sent unload request for '%s'", model)
     except Exception as ex:
-        logger.warning("Failed to unload model '%s': %s", model, ex)
+        logger.warning("Failed to send unload for '%s': %s", model, ex)
+        return
+
+    # Poll /api/ps until the model is actually gone (max ~10 seconds)
+    for i in range(20):
+        time.sleep(0.5)
+        loaded = _get_loaded_models(base_url)
+        still_loaded = any(
+            model == m or model.split(":")[0] == m.split(":")[0]
+            for m in loaded
+        )
+        if not still_loaded:
+            logger.info("Confirmed model '%s' unloaded (took ~%.1fs)", model, (i + 1) * 0.5)
+            return
+
+    logger.warning("Model '%s' may still be loaded after 10s wait", model)
+
+
+def _unload_all_loaded_models(base_url: str) -> None:
+    """Unload ALL currently loaded Ollama models.
+
+    Uses /api/ps to discover what's loaded, then unloads only those.
+    This avoids the bug where blindly unloading a model that isn't loaded
+    causes Ollama to load it first (consuming RAM).
+    """
+    loaded = _get_loaded_models(base_url)
+    if not loaded:
+        logger.debug("No models currently loaded in Ollama")
+        return
+
+    logger.info("Currently loaded models: %s", ", ".join(loaded))
+    for model in loaded:
+        _unload_ollama_model(model, base_url)
 
 
 def _call_ollama_pipeline(
@@ -292,9 +406,11 @@ def _call_ollama_pipeline(
     _check_ollama_running(base_url)
 
     # ── Pre-cleanup: unload any leftover models from previous runs ──
+    # Uses /api/ps to only unload what's actually loaded — avoids the
+    # load-to-unload paradox that was causing OOM errors.
     logger.info("[pipeline] Clearing VRAM/RAM before starting...")
-    _unload_ollama_model(cfg.code_model, base_url)
-    _unload_ollama_model(cfg.vision_model, base_url)
+    _unload_all_loaded_models(base_url)
+    _drop_filesystem_cache()  # Reclaim buff/cache memory (especially after pulls)
 
     # ── Stage 1: Vision extraction ──
     logger.info("[pipeline] Stage 1: Loading vision model '%s'...", cfg.vision_model)
@@ -319,9 +435,12 @@ def _call_ollama_pipeline(
             }
         ],
         "stream": False,
+        "keep_alive": 0,  # Unload immediately after inference — critical for memory
         "options": {
             "temperature": 0.1,  # Low temp for accurate extraction
             "num_predict": 2048,
+            "num_ctx": 2048,     # Small context — we only extract a problem statement
+            "num_gpu": 99,       # Offload as many layers to GPU as possible
         },
     }
 
@@ -360,9 +479,12 @@ def _call_ollama_pipeline(
             }
         ],
         "stream": False,
+        "keep_alive": 0,  # Unload immediately after inference — free RAM for desktop
         "options": {
             "temperature": 0.2,
             "num_predict": 4096,
+            "num_ctx": 4096,     # Enough for problem + code, avoids huge KV cache
+            "num_gpu": 99,       # Offload as many layers to GPU as possible
         },
     }
 
@@ -523,7 +645,7 @@ def _call_provider(
                 cfg.name, cfg.model, attempt + 1, _MAX_RETRIES + 1,
             )
             raw_text = func(cfg, image_bytes, prompt)
-            code = strip_indentation(strip_code_fences(raw_text))
+            code = strip_c_comments(strip_indentation(strip_code_fences(raw_text)))
             logger.info(
                 "[%s] Response: %d chars of code", cfg.name, len(code)
             )
@@ -607,6 +729,7 @@ def cleanup_local_models(providers: list[ProviderConfig]) -> None:
 
     Called on reset combo or kill switch to free GPU memory immediately,
     even if the pipeline thread is still running.
+    Uses /api/ps to only unload models that are actually loaded.
     """
     for cfg in providers:
         if cfg.provider_type != "ollama":
@@ -621,15 +744,5 @@ def cleanup_local_models(providers: list[ProviderConfig]) -> None:
         except (httpx.ConnectError, httpx.TimeoutException):
             continue  # Ollama not running, nothing to clean up
 
-        # Unload all models associated with this provider
-        models_to_unload = set()
-        if cfg.model:
-            models_to_unload.add(cfg.model)
-        if cfg.vision_model:
-            models_to_unload.add(cfg.vision_model)
-        if cfg.code_model:
-            models_to_unload.add(cfg.code_model)
-
-        for model in models_to_unload:
-            logger.info("Cleanup: unloading '%s' from VRAM...", model)
-            _unload_ollama_model(model, base_url)
+        # Unload whatever is actually loaded (safe — won't load anything new)
+        _unload_all_loaded_models(base_url)

@@ -1,6 +1,7 @@
 """Logging setup and shared utility functions."""
 
 import logging
+import re
 import sys
 
 
@@ -75,3 +76,65 @@ def strip_indentation(code: str) -> str:
     lines = code.split("\n")
     stripped = [line.lstrip() for line in lines]
     return "\n".join(stripped)
+
+
+# Regex that matches: string literals (preserve), single-line comments, multi-line comments
+_C_COMMENT_RE = re.compile(
+    r'("(?:[^"\\]|\\.)*"'       # Double-quoted string (group 1) — preserve
+    r"|'(?:[^'\\]|\\.)*'"       # Single-quoted char literal — preserve
+    r"|//[^\n]*"                # Single-line comment — remove
+    r"|/\*.*?\*/)",             # Multi-line comment — remove
+    re.DOTALL,
+)
+
+
+def _c_comment_replacer(match: re.Match) -> str:
+    """Keep string/char literals, remove comments."""
+    text = match.group(0)
+    if text.startswith(("//")):
+        return ""
+    if text.startswith("/*"):
+        return ""
+    return text  # It's a string or char literal — keep it
+
+
+def strip_c_comments(code: str) -> str:
+    """Remove C/C++ comments while preserving string literals.
+
+    Handles:
+        - Single-line comments: // ...
+        - Multi-line comments:  /* ... */
+        - Preserves // and /* inside string literals
+
+    Args:
+        code: C or C++ source code.
+
+    Returns:
+        Code with all comments removed and blank lines collapsed.
+    """
+    result = _C_COMMENT_RE.sub(_c_comment_replacer, code)
+    return strip_blank_lines(result)
+
+
+def strip_blank_lines(code: str) -> str:
+    """Collapse multiple consecutive blank lines into at most one.
+
+    Also removes trailing whitespace from each line.
+
+    Args:
+        code: Source code string.
+
+    Returns:
+        Cleaned code string.
+    """
+    lines = code.split("\n")
+    cleaned = []
+    prev_blank = False
+    for line in lines:
+        stripped = line.rstrip()
+        is_blank = not stripped
+        if is_blank and prev_blank:
+            continue  # Skip consecutive blank lines
+        cleaned.append(stripped)
+        prev_blank = is_blank
+    return "\n".join(cleaned).strip()
