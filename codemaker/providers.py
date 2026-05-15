@@ -291,6 +291,11 @@ def _call_ollama_pipeline(
 
     _check_ollama_running(base_url)
 
+    # ── Pre-cleanup: unload any leftover models from previous runs ──
+    logger.info("[pipeline] Clearing VRAM/RAM before starting...")
+    _unload_ollama_model(cfg.code_model, base_url)
+    _unload_ollama_model(cfg.vision_model, base_url)
+
     # ── Stage 1: Vision extraction ──
     logger.info("[pipeline] Stage 1: Loading vision model '%s'...", cfg.vision_model)
     _ensure_ollama_model(cfg.vision_model, base_url)
