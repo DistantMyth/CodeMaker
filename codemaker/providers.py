@@ -566,12 +566,12 @@ def _ensure_ollama_model(model: str, base_url: str) -> None:
 
     # Use streaming API pull to show download progress
     try:
-        with httpx.Client(timeout=600) as client:
+        with httpx.Client(timeout=None) as client:
             with client.stream(
                 "POST",
                 f"{base_url}/api/pull",
                 json={"name": model, "stream": True},
-                timeout=600,
+                timeout=None,
             ) as resp:
                 if resp.status_code != 200:
                     raise RuntimeError(f"Pull failed: HTTP {resp.status_code}")
@@ -603,8 +603,14 @@ def _ensure_ollama_model(model: str, base_url: str) -> None:
                     elif status:
                         logger.info("  Pulling '%s': %s", model, status)
 
-        logger.info("Successfully pulled model '%s'", model)
-        return
+                    if error:
+                        raise RuntimeError(f"Ollama pull error: {error}")
+
+                    if status == "success":
+                        logger.info("Successfully pulled model '%s'", model)
+                        return
+
+        raise RuntimeError("Pull stream ended before receiving success confirmation")
     except RuntimeError:
         raise
     except Exception as ex:
