@@ -335,7 +335,8 @@ def _call_ollama_pipeline(
     logger.info(
         "[pipeline] Extracted question: %d chars", len(extracted_question)
     )
-    logger.debug("[pipeline] Question preview: %s...", extracted_question[:200])
+    logger.info("[pipeline] ── Extracted Question ──\n%s", extracted_question)
+    logger.info("[pipeline] ── End of Extracted Question ──")
 
     # ── Unload vision model to free VRAM ──
     logger.info("[pipeline] Unloading vision model...")
@@ -404,40 +405,78 @@ def _ensure_ollama_model(model: str, base_url: str) -> None:
     except Exception as ex:
         logger.warning("Could not check Ollama models: %s", ex)
 
-    # Model not found — auto-pull
+    # Model not found — auto-pull with progress
     logger.info(
         "Ollama model '%s' not found locally. Pulling (this may take a while)...",
         model,
     )
 
-    # Try API pull first
+    # Use streaming API pull to show download progress
     try:
         with httpx.Client(timeout=600) as client:
-            resp = client.post(
+            with client.stream(
+                "POST",
                 f"{base_url}/api/pull",
-                json={"name": model, "stream": False},
+                json={"name": model, "stream": True},
                 timeout=600,
-            )
-        if resp.status_code == 200:
-            logger.info("Successfully pulled model '%s'", model)
-            return
-    except Exception:
-        pass
+            ) as resp:
+                if resp.status_code != 200:
+                    raise RuntimeError(f"Pull failed: HTTP {resp.status_code}")
 
-    # Fallback to CLI
+                last_pct = -1
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    status = data.get("status", "")
+                    total = data.get("total", 0)
+                    completed = data.get("completed", 0)
+
+                    if total and total > 0:
+                        pct = int(completed / total * 100)
+                        # Log every 5% to avoid spam
+                        if pct >= last_pct + 5:
+                            last_pct = pct
+                            total_gb = total / (1024 ** 3)
+                            done_gb = completed / (1024 ** 3)
+                            logger.info(
+                                "  Pulling '%s': %d%% (%.1f / %.1f GB)",
+                                model, pct, done_gb, total_gb,
+                            )
+                    elif status:
+                        logger.info("  Pulling '%s': %s", model, status)
+
+        logger.info("Successfully pulled model '%s'", model)
+        return
+    except RuntimeError:
+        raise
+    except Exception as ex:
+        logger.warning("Streaming pull failed: %s — trying CLI...", ex)
+
+    # Fallback to CLI (shows progress in subprocess output)
     if shutil.which("ollama"):
         logger.info("Pulling via ollama CLI...")
-        result = subprocess.run(
+        # Use Popen to stream CLI output in real-time
+        proc = subprocess.Popen(
             ["ollama", "pull", model],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=600,
         )
-        if result.returncode == 0:
+        for line in proc.stdout:
+            line = line.strip()
+            if line:
+                logger.info("  ollama: %s", line)
+        proc.wait()
+        if proc.returncode == 0:
             logger.info("Successfully pulled model '%s'", model)
             return
         raise RuntimeError(
-            f"Failed to pull Ollama model '{model}': {result.stderr}"
+            f"Failed to pull Ollama model '{model}' (exit code {proc.returncode})"
         )
 
     raise RuntimeError(
