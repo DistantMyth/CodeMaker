@@ -37,6 +37,7 @@ Type=simple
 User=root
 Environment=SUDO_USER=$SUDO_USER
 Environment=SUDO_UID=$SUDO_UID_VAL
+Environment=HOME=/home/$SUDO_USER
 WorkingDirectory=$PROJECT_DIR
 ExecStart=$VENV_PYTHON -m codemaker
 Restart=on-failure

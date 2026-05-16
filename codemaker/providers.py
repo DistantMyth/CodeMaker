@@ -588,6 +588,7 @@ def _ensure_ollama_model(model: str, base_url: str) -> None:
                     status = data.get("status", "")
                     total = data.get("total", 0)
                     completed = data.get("completed", 0)
+                    error = data.get("error", "")
 
                     if total and total > 0:
                         pct = int(completed / total * 100)
