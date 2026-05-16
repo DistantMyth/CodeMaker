@@ -29,8 +29,8 @@ echo "Creating systemd service at $SERVICE_FILE..."
 cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=CodeMaker — AI code ghost-typing service
-After=graphical-session.target
-Wants=graphical-session.target
+After=graphical.target
+Wants=graphical.target
 
 [Service]
 Type=simple
@@ -45,7 +45,7 @@ StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=graphical.target
 EOF
 
 echo "Reloading systemd daemon..."
