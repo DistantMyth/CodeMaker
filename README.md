@@ -788,58 +788,25 @@ Expected output:
 <details>
 <summary><strong>Click to expand</strong></summary>
 
-#### 1. Create the service file
+#### 1. Run the Autostart Setup Script
+
+We've included an automated script that configures the systemd service for you, automatically detecting your user ID and Python virtual environment paths.
 
 ```bash
-sudo nano /etc/systemd/system/codemaker.service
+sudo ./setup_autostart.sh
 ```
 
-Paste the following (adjust paths to match your setup):
+This script will:
+1. Create the `/etc/systemd/system/codemaker.service` file
+2. Inject your specific `$SUDO_USER` and `$SUDO_UID` (required for Wayland screenshot recovery)
+3. Enable the service to start automatically on boot
+4. Start it immediately in the background
 
-```ini
-[Unit]
-Description=CodeMaker — AI code ghost-typing service
-After=graphical-session.target
-Wants=graphical-session.target
+#### 2. Viewing Logs
 
-[Service]
-Type=simple
-# ─── CHANGE THESE to match your setup ───
-User=root
-Environment=SUDO_USER=tarun
-Environment=SUDO_UID=1000
-WorkingDirectory=/home/tarun/CodeMaker
-ExecStart=/home/tarun/CodeMaker/.venv/bin/python -m codemaker
-# ─────────────────────────────────────────
-Restart=on-failure
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=graphical-session.target
-```
-
-> **Important:** The `SUDO_USER` and `SUDO_UID` environment variables are needed so CodeMaker can recover your Wayland session for screenshots. Replace `tarun` and `1000` with your username and UID (`id -u`).
-
-#### 2. Enable and start
-
-```bash
-# Reload systemd to pick up the new service
-sudo systemctl daemon-reload
-
-# Start immediately
-sudo systemctl start codemaker
-
-# Enable on boot
-sudo systemctl enable codemaker
-
-# Check status
-sudo systemctl status codemaker
-
-# View logs
-journalctl -u codemaker -f
-```
+CodeMaker automatically writes logs to two places when running in the background:
+1. **Systemd Journal:** `journalctl -u codemaker -f`
+2. **Local Log File:** `tail -f codemaker.log` (in the project root directory)
 
 #### 3. Manage
 

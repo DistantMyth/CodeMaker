@@ -8,23 +8,38 @@ import sys
 def setup_logging(level: int = logging.INFO) -> None:
     """Configure logging for the service.
 
-    Logs to stderr so they don't interfere with any stdout usage.
+    Logs to stderr so they don't interfere with any stdout usage,
+    and also writes to codemaker.log in the project root.
     """
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(
-        logging.Formatter(
-            "[%(asctime)s] %(name)s %(levelname)s: %(message)s",
-            datefmt="%H:%M:%S",
-        )
+    import os
+    
+    formatter = logging.Formatter(
+        "[%(asctime)s] %(name)s %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
+
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setFormatter(formatter)
+
+    # File handler (writes to CodeMaker/codemaker.log)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log_file = os.path.join(project_root, "codemaker.log")
+    
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setFormatter(formatter)
 
     root = logging.getLogger("codemaker")
     root.setLevel(level)
-    root.addHandler(handler)
+    # Clear any existing handlers to prevent duplicates if called multiple times
+    root.handlers.clear()
+    root.addHandler(console_handler)
+    root.addHandler(file_handler)
 
     # Suppress noisy third-party loggers
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("google").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def strip_code_fences(text: str) -> str:
